@@ -109,6 +109,19 @@ struct ChatView: View {
         }
     }
 
+    private var buddy: Buddy? {
+        guard route.kind == .chat else { return nil }
+        return manager.buddy(account: route.account, jid: route.peer)
+    }
+
+    /// The contact's status, and their status message when they've set one.
+    private var statusLine: String? {
+        guard let buddy else { return nil }
+        if isTyping { return "typing…" }
+        guard let text = buddy.statusText, !text.isEmpty else { return buddy.availability.label }
+        return "\(buddy.availability.label): \(text)"
+    }
+
     private var isTyping: Bool {
         route.kind == .chat && session?.typingPeers.contains(route.peer) == true
     }
@@ -173,8 +186,14 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    AvatarView(key: route.peer, name: route.title, size: 30)
+                    PresenceAvatar(key: route.peer, name: route.title, size: 30, availability: buddy?.availability)
                     Text(verbatim: route.title).font(.caption2).lineLimit(1)
+                    if let statusLine {
+                        Text(verbatim: statusLine)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             if route.kind == .room {

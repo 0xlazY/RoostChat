@@ -160,12 +160,7 @@ private struct BuddyRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AvatarView(key: buddy.jid, name: buddy.name, size: 44)
-                .overlay(alignment: .bottomTrailing) {
-                    AvailabilityDot(availability: buddy.availability)
-                        .padding(2)
-                        .background(Color(.systemBackground), in: Circle())
-                }
+            PresenceAvatar(key: buddy.jid, name: buddy.name, size: 44, availability: buddy.availability)
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: buddy.name)
                     .foregroundStyle(buddy.availability == .offline ? .secondary : .primary)

@@ -57,9 +57,15 @@ struct ConversationListView: View {
         conversation.kind == .chat && manager.session(for: conversation.account)?.typingPeers.contains(conversation.peer) == true
     }
 
+    private func availability(of conversation: StoredConversation) -> Availability? {
+        guard conversation.kind == .chat else { return nil }
+        return manager.buddy(account: conversation.account, jid: conversation.peer)?.availability
+    }
+
     private func conversationLink(_ conversation: StoredConversation) -> some View {
         NavigationLink(value: route(for: conversation)) {
-            ConversationRow(conversation: conversation, isTyping: isTyping(conversation))
+            ConversationRow(conversation: conversation, isTyping: isTyping(conversation),
+                            availability: availability(of: conversation))
         }
         .swipeActions {
             Button(conversation.kind == .room ? "Leave" : "Delete", role: .destructive) {
@@ -122,6 +128,7 @@ private func shortDate(_ date: Date) -> String {
 private struct ConversationRow: View {
     let conversation: StoredConversation
     let isTyping: Bool
+    let availability: Availability?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -129,7 +136,7 @@ private struct ConversationRow: View {
                 .fill(conversation.unread > 0 ? Color.blue : Color.clear)
                 .frame(width: 9, height: 9)
                 .accessibilityLabel(conversation.unread > 0 ? "\(conversation.unread) unread" : "")
-            AvatarView(key: conversation.peer, name: conversation.title, size: 48)
+            PresenceAvatar(key: conversation.peer, name: conversation.title, size: 48, availability: availability)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(verbatim: conversation.title)

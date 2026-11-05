@@ -143,6 +143,12 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    /// A contact's roster entry, for showing their status. Nil for rooms and for
+    /// people who aren't in the buddy list, whose status isn't known.
+    func buddy(account: String, jid: String) -> Buddy? {
+        session(for: account)?.buddies.first { $0.jid == jid }
+    }
+
     func session(for jid: String) -> AccountSession? {
         sessions.first { $0.jid == jid }
     }

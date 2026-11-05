@@ -43,6 +43,25 @@ extension Availability {
     }
 }
 
+/// A profile picture with the contact's status in the corner, when it's known.
+struct PresenceAvatar: View {
+    let key: String
+    let name: String
+    let size: CGFloat
+    let availability: Availability?
+
+    var body: some View {
+        AvatarView(key: key, name: name, size: size)
+            .overlay(alignment: .bottomTrailing) {
+                if let availability {
+                    AvailabilityDot(availability: availability)
+                        .padding(2)
+                        .background(Color(.systemBackground), in: Circle())
+                }
+            }
+    }
+}
+
 struct AvailabilityDot: View {
     let availability: Availability
 
