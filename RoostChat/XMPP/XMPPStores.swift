@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Martin
 
@@ -76,6 +77,20 @@ final class AppRoomStore: RoomStore {
 
     func initialize(context: Context) {}
     func deinitialize(context: Context) {}
+}
+
+/// Martin drops a body-less message unless a chat object already exists for that
+/// contact. The app sends through its own path, so usually none does, and typing
+/// notifications were lost. This reports them before Martin can discard them.
+final class ChatStateMessageModule: MessageModule {
+    let chatStates = PassthroughSubject<Message, Never>()
+
+    override func process(stanza: Stanza) {
+        if let message = stanza as? Message, message.chatState != nil, message.type != .error {
+            chatStates.send(message)
+        }
+        super.process(stanza: stanza)
+    }
 }
 
 /// Martin processes any message carrying a carbons element without checking who

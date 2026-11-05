@@ -1,7 +1,9 @@
 # RoosterChat push relay
 
-Lets iOS show "New Message" when the app is suspended. It stores no messages and
-never sees message text: it receives a device token and asks Apple to wake that device.
+Lets iOS show "New Message" when the app is suspended. It stores no messages: it receives
+a device token and asks Apple to show a fixed alert. Apple never gets message text. The
+relay can see the sender and text only if your XMPP server is configured to include them in
+push notifications, so check that setting if whoever runs the relay isn't trusted.
 It uses [fpush](https://github.com/monal-im/fpush) with a small Prosody for federation.
 
 ## 1. Apple setup (developer account owner)
@@ -84,4 +86,4 @@ screen's diagnostics then show the push status.
 - The APNs certificate can only send pushes to this app. Revoke it in the developer account
   if it leaks. It expires after about a year.
 - A device token alone lets someone who controls an XMPP server wake that device, with the
-  20 second rate limit. It reveals nothing about messages.
+  20 second rate limit. It doesn't reveal message contents by itself.

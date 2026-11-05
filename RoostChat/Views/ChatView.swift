@@ -26,6 +26,7 @@ struct ChatView: View {
     @Query private var newestFirst: [StoredMessage]
     @State private var draft = ""
     @State private var announcedComposing = false
+    @State private var composingIdleTask: Task<Void, Never>?
     @State private var showingOccupants = false
 
     private static let historyLimit = 500
@@ -208,6 +209,7 @@ struct ChatView: View {
                 .onChange(of: draft) { _, text in updateComposing(text) }
             if canSend {
                 Button {
+                    composingIdleTask?.cancel()
                     session?.send(draft, route: route)
                     draft = ""
                     announcedComposing = false
@@ -230,14 +232,25 @@ struct ChatView: View {
 
     private func updateComposing(_ text: String) {
         guard route.kind == .chat else { return }
-        let composing = !text.isEmpty
-        if composing != announcedComposing {
-            announcedComposing = composing
-            session?.sendChatState(composing: composing, to: route.peer)
+        composingIdleTask?.cancel()
+        guard !text.isEmpty else {
+            stopComposing()
+            return
+        }
+        if !announcedComposing {
+            announcedComposing = true
+            session?.sendChatState(composing: true, to: route.peer)
+        }
+        // A pause in typing stops the indicator for the contact, as in XEP-0085.
+        composingIdleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            stopComposing()
         }
     }
 
     private func stopComposing() {
+        composingIdleTask?.cancel()
         if announcedComposing {
             announcedComposing = false
             session?.sendChatState(composing: false, to: route.peer)

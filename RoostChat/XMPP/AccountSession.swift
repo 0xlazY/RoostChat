@@ -131,6 +131,10 @@ final class AccountSession: ObservableObject, Identifiable {
     private let streamLogger: StreamDebugLogger
     private var watchdog: Task<Void, Never>?
     private var pingInFlight = false
+    private var typingExpiry = [String: Task<Void, Never>]()
+    /// A contact whose client stops responding never sends "paused", so "typing"
+    /// clears itself after this long.
+    private static let typingTimeout: UInt64 = 30_000_000_000
     private let avatarModule: PEPUserAvatarModule
     private let vcardModule: VCardTempModule
     private let pushModule: PushNotificationsModule
@@ -171,7 +175,7 @@ final class AccountSession: ObservableObject, Identifiable {
         rosterModule = modules.register(RosterModule(rosterManager: RosterManagerBase<AppRosterStore>(store: AppRosterStore())))
         presenceModule = modules.register(PresenceModule())
         modules.register(CapabilitiesModule())
-        let messageModule = modules.register(MessageModule(chatManager: DefaultChatManager(store: DefaultChatStore())))
+        let messageModule = modules.register(ChatStateMessageModule(chatManager: DefaultChatManager(store: DefaultChatStore())))
         let verifiedCarbons = modules.register(VerifiedCarbonsModule())
         carbonsModule = verifiedCarbons
         mamModule = modules.register(MessageArchiveManagementModule())
@@ -202,6 +206,11 @@ final class AccountSession: ObservableObject, Identifiable {
         client.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.handle(state: state) }
+            .store(in: &cancellables)
+
+        messageModule.chatStates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in self?.handleChatState(message) }
             .store(in: &cancellables)
 
         messageModule.messagesPublisher
@@ -530,6 +539,8 @@ final class AccountSession: ObservableObject, Identifiable {
             pingInFlight = false
             diagnostics.connectedSince = nil
             assignedResource = nil
+            typingExpiry.values.forEach { $0.cancel() }
+            typingExpiry = [:]
             typingPeers = []
             rosterRefresh.send(())
             handleDisconnect(reason)
@@ -927,15 +938,29 @@ final class AccountSession: ObservableObject, Identifiable {
             handleBounce(message)
             return
         }
-        if let from = message.from, let state = message.chatState {
-            let peer = Address.bare(from.stringValue)
-            if state == .composing {
-                typingPeers.insert(peer)
-            } else {
-                typingPeers.remove(peer)
-            }
-        }
         storeRouted(message, source: .live, timestamp: MessageRouting.effectiveTimestamp(delay: message.delay?.stamp))
+    }
+
+    private func handleChatState(_ message: Message) {
+        guard let from = message.from, let state = message.chatState else { return }
+        let peer = Address.bare(from.stringValue)
+        guard peer != jid, !knownRooms.contains(peer) else { return }
+        setTyping(state == .composing, peer: peer)
+    }
+
+    private func setTyping(_ typing: Bool, peer: String) {
+        typingExpiry[peer]?.cancel()
+        typingExpiry[peer] = nil
+        guard typing else {
+            typingPeers.remove(peer)
+            return
+        }
+        typingPeers.insert(peer)
+        typingExpiry[peer] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.typingTimeout)
+            guard !Task.isCancelled else { return }
+            self?.setTyping(false, peer: peer)
+        }
     }
 
     private func handleCarbon(_ message: Message, sent: Bool) {
@@ -967,7 +992,7 @@ final class AccountSession: ObservableObject, Identifiable {
             insert(peer: peer, kind: .chat, title: title, sender: outgoing ? "me" : title, body: body,
                    timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread,
                    mediaURL: MediaLink.detect(oob: message.oob, body: body), ownNickname: nil)
-            if !outgoing { typingPeers.remove(peer) }
+            if !outgoing { setTyping(false, peer: peer) }
         case .roomPrivate(let peer, _, let nick, let outgoing):
             insert(peer: peer, kind: .roomPrivate, title: nick, sender: outgoing ? "me" : nick, body: body,
                    timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread,
