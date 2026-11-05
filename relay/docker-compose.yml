@@ -1,0 +1,50 @@
+# RoosterChat push relay. XMPP servers reach it over federation on port 5269:
+#
+#   your XMPP server --s2s--> prosody --component--> fpush --HTTP/2--> Apple
+#
+# Port 5269 is raw XMPP, so it is published directly rather than through nginx.
+name: roosterchat-push
+
+services:
+  prosody:
+    image: prosodyim/prosody:13.0
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5269:5269"
+    volumes:
+      - ./prosody.cfg.lua:/etc/prosody/prosody.cfg.lua:ro
+      - ./certs:/etc/prosody/certs:ro
+    # Runs as the image's unprivileged prosody user, skipping its entrypoint script,
+    # which needs root and can't work with these restrictions.
+    user: "100:102"
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["prosody", "-F"]
+    read_only: true
+    tmpfs:
+      - /var/lib/prosody:uid=100,gid=102,mode=0750
+      - /var/run/prosody:uid=100,gid=102,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  fpush:
+    build:
+      # Pinned so that a rebuild can't silently pull in different code.
+      context: https://github.com/monal-im/fpush.git#9c69814d60d22eb4c7fe6ce97f409b40ae1e61fc
+      dockerfile: docker/Dockerfile
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - prosody
+    environment:
+      RUST_LOG: info
+    volumes:
+      - ./settings.json:/etc/fpush/settings.json:ro
+      - ./secrets/apns.p12:/etc/fpush/apns.p12:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

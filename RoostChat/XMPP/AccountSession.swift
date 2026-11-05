@@ -133,6 +133,9 @@ final class AccountSession: ObservableObject, Identifiable {
     private var pingInFlight = false
     private let avatarModule: PEPUserAvatarModule
     private let vcardModule: VCardTempModule
+    private let pushModule: PushNotificationsModule
+    /// The relay and token last enabled on the server, for turning them off.
+    private var enabledPush: (relay: String, token: String)?
     private var avatarQueue: [String] = []
     private var avatarsRequested = Set<String>()
     private var avatarFetchesActive = 0
@@ -176,6 +179,7 @@ final class AccountSession: ObservableObject, Identifiable {
         modules.register(PubSubModule())
         avatarModule = modules.register(PEPUserAvatarModule())
         vcardModule = modules.register(VCardTempModule())
+        pushModule = modules.register(PushNotificationsModule())
         let streamManagementModule = modules.register(StreamManagementModule())
         // Ask the server to hold the session (and our status) while the socket
         // is down. Servers cap this at their own limit.
@@ -512,6 +516,8 @@ final class AccountSession: ObservableObject, Identifiable {
                 avatarQueue = []
                 requestAvatar(jid)
                 carbonsModule.enable(nil)
+                enabledPush = nil
+                updatePush()
                 rejoinRooms()
                 archiveSyncPending = true
                 syncArchiveIfNeeded()
@@ -617,6 +623,53 @@ final class AccountSession: ObservableObject, Identifiable {
             }
         }
         diagnostics.smEnabled = streamManagement.resumptionEnabled
+    }
+
+    // MARK: Push
+
+    var pushToken: String?
+    var pushRelay: String?
+
+    /// Asks the XMPP server to notify the relay while this account's connection is
+    /// down (XEP-0357). The server stores the relay address and device token; no
+    /// server configuration is needed if it already offers push.
+    func updatePush() {
+        guard client.state == .connected() else { return }
+        guard let relay = pushRelay, let token = pushToken else {
+            disablePush()
+            if pushRelay == nil { diagnostics.pushStatus = nil }
+            return
+        }
+        if let current = enabledPush, current.relay == relay, current.token == token { return }
+        disablePush()
+        diagnostics.pushStatus = "Enabling through \(relay)…"
+        pushModule.enable(serviceJid: JID(relay), node: token, completionHandler: { [weak self] result in
+            var failure: String?
+            if case .failure(let error) = result { failure = error.localizedDescription }
+            let problem = failure
+            Task { @MainActor [weak self] in
+                self?.finishedEnablingPush(relay: relay, token: token, problem: problem)
+            }
+        })
+    }
+
+    private func finishedEnablingPush(relay: String, token: String, problem: String?) {
+        if let problem {
+            diagnostics.pushStatus = "Server refused: \(problem)"
+            log("Push not enabled: \(problem)")
+        } else {
+            enabledPush = (relay, token)
+            diagnostics.pushStatus = "Enabled through \(relay)"
+            log("Push enabled through \(relay)")
+        }
+    }
+
+    /// Stops pushes for this device, for instance before removing the account.
+    func disablePush() {
+        guard let current = enabledPush else { return }
+        enabledPush = nil
+        guard client.state == .connected() else { return }
+        pushModule.disable(serviceJid: JID(current.relay), node: current.token, completionHandler: nil)
     }
 
     // MARK: Avatars

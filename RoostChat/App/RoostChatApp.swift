@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct RoostChatApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let container: ModelContainer
     @StateObject private var manager: SessionManager
     @Environment(\.scenePhase) private var scenePhase

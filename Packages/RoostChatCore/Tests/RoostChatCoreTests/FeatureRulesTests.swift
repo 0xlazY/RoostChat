@@ -165,3 +165,19 @@ final class ChatTimelineTests: XCTestCase {
         XCTAssertTrue(ChatTimeline.needsHeader(previous: date(1, 23, 59), current: date(2, 0, 1), calendar: calendar))
     }
 }
+
+final class PushRelayTests: XCTestCase {
+    func testDomainIsNormalized() {
+        XCTAssertEqual(PushRelay.normalizedDomain("  Push.Example.ORG\n"), "push.example.org")
+    }
+
+    func testInvalidDomains() {
+        for bad in ["", "localhost", "push example.org", "user@example.org", "https://push.example.org", ".example.org", "example.org."] {
+            XCTAssertNil(PushRelay.normalizedDomain(bad), bad)
+        }
+    }
+
+    func testTokenIsLowercaseHexWithLeadingZeros() {
+        XCTAssertEqual(PushRelay.hexToken(Data([0x00, 0x0A, 0xFF])), "000aff")
+    }
+}

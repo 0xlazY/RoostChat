@@ -10,3 +10,9 @@ DerivedData/
 *.xcarchive
 
 .DS_Store
+
+# Relay credentials
+relay/.env
+relay/settings.json
+relay/secrets/
+relay/certs/

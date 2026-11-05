@@ -34,6 +34,9 @@ targets:
         # Set by the App Store Connect workflow. It's indirect so that the profile
         # only applies to this target: package targets reject provisioning profiles.
         PROVISIONING_PROFILE_SPECIFIER: $(RELEASE_PROFILE_NAME)
+        # Set by the same workflow. Sideloaded builds can't use push: free accounts
+        # don't allow it, so they carry no entitlements.
+        CODE_SIGN_ENTITLEMENTS: $(RELEASE_ENTITLEMENTS)
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Silent audio (RoostChat/Services/BackgroundKeeper.swift) is left out of

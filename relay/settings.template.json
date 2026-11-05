@@ -1,0 +1,27 @@
+{
+    "component": {
+        "componentHostname": "__PUSH_DOMAIN__",
+        "componentKey": "__COMPONENT_SECRET__",
+        "serverHostname": "prosody",
+        "serverPort": 5347
+    },
+    "pushModules": {
+        "roosterchat": {
+            "type": "apple",
+            "is_default_module": true,
+            "apns": {
+                "certFilePath": "/etc/fpush/apns.p12",
+                "certPassword": "__APNS_P12_PASSWORD__",
+                "topic": "io.github.lazy.roostchat"
+            },
+            "ratelimit": {
+                "ratelimitTime": "20s",
+                "ratelimitCleanupInterval": "300s",
+                "enabled": true
+            }
+        }
+    },
+    "timeout": {
+        "xmppconnectionError": "20s"
+    }
+}

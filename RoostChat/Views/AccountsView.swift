@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage(AppSettings.notificationRooms) private var notificationRooms = RoomNotificationMode.mentions.rawValue
     @AppStorage(AppSettings.autoFetchMedia) private var autoFetchMedia = false
     @State private var showingAdd = false
+    @State private var relayDraft = ""
+    @State private var relayProblem: String?
 
     var body: some View {
         NavigationStack {
@@ -68,6 +70,22 @@ struct SettingsView: View {
                     .disabled(!notificationsEnabled)
                 }
                 Section {
+                    TextField("push.example.com", text: $relayDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Button("Save Relay") {
+                        relayProblem = manager.setPushRelay(relayDraft) ? nil : "That isn't a valid domain."
+                    }
+                    if let problem = relayProblem ?? manager.pushProblem {
+                        Text(verbatim: problem).font(.caption).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Push Relay")
+                } footer: {
+                    Text("Shows \"New Message\" when the app is suspended, through a relay you host. Your XMPP server and the relay learn this device's push token, and message text isn't sent. Leave blank to turn it off. Each account's diagnostics show its status.")
+                }
+                Section {
                     Toggle("Fetch images automatically", isOn: $autoFetchMedia)
                 } header: {
                     Text("Media")
@@ -88,6 +106,7 @@ struct SettingsView: View {
                 Button("Add Account", systemImage: "plus") { showingAdd = true }
             }
             .sheet(isPresented: $showingAdd) { AddAccountView() }
+            .onAppear { relayDraft = manager.pushRelay ?? "" }
         }
     }
 

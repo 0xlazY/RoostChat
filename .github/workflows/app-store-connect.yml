@@ -67,6 +67,10 @@ jobs:
             echo "::error::The profile is for a different team or bundle ID than $BUNDLE_ID on the team in APPLE_TEAM_ID."
             exit 1
           fi
+          if ! plutil -extract Entitlements.aps-environment raw "$RUNNER_TEMP/profile.plist" > /dev/null 2>&1; then
+            echo "::error::The provisioning profile doesn't include push. Enable Push Notifications on the App ID, regenerate the profile and update PROVISIONING_PROFILE."
+            exit 1
+          fi
           for DIR in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
             mkdir -p "$DIR"
             cp "$PROFILE_PATH" "$DIR/$UUID.mobileprovision"
@@ -90,6 +94,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             RELEASE_PROFILE_NAME="$PROFILE_NAME" \
+            RELEASE_ENTITLEMENTS=RoostChat/RoostChat.entitlements \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             > build.log 2>&1 || {
               echo "::group::Errors"

@@ -18,6 +18,7 @@ struct ConnectionDiagnostics {
     var resumed = false
     var smEnabled = false
     var lastPing: String?
+    var pushStatus: String?
 
     var rows: [DiagnosticRow] {
         var result: [DiagnosticRow] = []
@@ -40,6 +41,7 @@ struct ConnectionDiagnostics {
         add("Last attempt", lastAttempt.map(Self.format))
         add("Last state change", lastStateChange.map(Self.format))
         add("Ping", lastPing)
+        add("Push", pushStatus)
         return result
     }
 

@@ -31,6 +31,8 @@ final class SessionManager: ObservableObject {
     @Published private(set) var statusMessage: String = ""
     /// A conversation to open, from tapping a notification.
     @Published var pendingRoute: ChatRoute?
+    @Published private(set) var pushProblem: String?
+    private var pushToken: String?
 
     /// The conversation on screen, which doesn't accumulate unread messages.
     var activeRoute: ChatRoute?
@@ -56,6 +58,17 @@ final class SessionManager: ObservableObject {
         let defaults = UserDefaults.standard
         availability = defaults.string(forKey: Self.availabilityKey).flatMap(Availability.init(rawValue:)) ?? .available
         statusMessage = defaults.string(forKey: Self.messageKey) ?? ""
+        AppDelegate.onToken = { [weak self] token in
+            Task { @MainActor [weak self] in
+                self?.received(pushToken: token)
+            }
+        }
+        AppDelegate.onTokenError = { [weak self] problem in
+            Task { @MainActor [weak self] in
+                self?.pushProblem = "This build can't use push: \(problem)"
+                DebugLog.shared.add(.app, "Push registration failed: \(problem)")
+            }
+        }
         notifier.onOpen = { [weak self] route in
             Task { @MainActor [weak self] in
                 self?.pendingRoute = route
@@ -75,6 +88,7 @@ final class SessionManager: ObservableObject {
         if UserDefaults.standard.bool(forKey: AppSettings.notificationsEnabled) {
             notifier.requestAuthorization()
         }
+        registerForPushIfConfigured()
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
             Task { @MainActor [weak self] in
@@ -84,6 +98,49 @@ final class SessionManager: ObservableObject {
         pathMonitor.start(queue: DispatchQueue(label: "roostchat.network"))
         updateKeepAlive()
         updateBadge()
+    }
+
+    // MARK: Push
+
+    var pushRelay: String? {
+        UserDefaults.standard.string(forKey: AppSettings.pushRelay).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Saves the relay domain, or clears it when blank. False if it isn't valid.
+    func setPushRelay(_ input: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: AppSettings.pushRelay)
+        } else if let domain = PushRelay.normalizedDomain(trimmed) {
+            UserDefaults.standard.set(domain, forKey: AppSettings.pushRelay)
+        } else {
+            return false
+        }
+        applyPushSettings()
+        registerForPushIfConfigured()
+        return true
+    }
+
+    private func registerForPushIfConfigured() {
+        guard pushRelay != nil, pushToken == nil else { return }
+        pushProblem = nil
+        notifier.requestAuthorization()
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    private func received(pushToken token: Data) {
+        pushToken = PushRelay.hexToken(token)
+        pushProblem = nil
+        DebugLog.shared.add(.app, "Received a push token")
+        applyPushSettings()
+    }
+
+    private func applyPushSettings() {
+        for session in sessions {
+            session.pushRelay = pushRelay
+            session.pushToken = pushToken
+            session.updatePush()
+        }
     }
 
     func session(for jid: String) -> AccountSession? {
@@ -175,6 +232,7 @@ final class SessionManager: ObservableObject {
     /// Removes the account and everything stored for it on this device. Nothing
     /// on the server is touched.
     func removeAccount(jid: String) {
+        session(for: jid)?.disablePush()
         session(for: jid)?.disconnect()
         sessions.removeAll { $0.jid == jid }
         sessionObservers[jid] = nil
@@ -350,6 +408,8 @@ final class SessionManager: ObservableObject {
             return self.activeRoute?.id
         }
         session.onIncoming = { [weak self] notice in self?.handleIncoming(notice) }
+        session.pushRelay = pushRelay
+        session.pushToken = pushToken
         session.setPresence(availability, message: statusMessage)
         // Views observe only the manager, so forward each account's changes.
         sessionObservers[jid] = session.objectWillChange.sink { [weak self] _ in

@@ -6,6 +6,7 @@ enum AppSettings {
     static let notificationPreview = "notifications.preview"
     static let notificationRooms = "notifications.rooms"
     static let autoFetchMedia = "media.autoFetch"
+    static let pushRelay = "push.relayDomain"
     static let loggingEnabled = "debug.loggingEnabled"
     static let logBodies = "debug.logBodies"
 
