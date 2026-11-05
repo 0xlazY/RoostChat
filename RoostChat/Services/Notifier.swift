@@ -49,7 +49,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func postTest() {
         let content = UNMutableNotificationContent()
-        content.title = "RoostChat"
+        content.title = "RoosterChat"
         content.body = "Notifications are working."
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3, repeats: false)

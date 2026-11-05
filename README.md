@@ -1,4 +1,4 @@
-# RoostChat
+# RoosterChat
 
 A native SwiftUI XMPP client for iOS, in the spirit of Pidgin: several accounts, one
 buddy list, a global status, and plain timestamped conversation logs.

@@ -45,7 +45,7 @@ targets:
     info:
       path: RoostChat/Info.plist
       properties:
-        CFBundleDisplayName: RoostChat
+        CFBundleDisplayName: RoosterChat
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
