@@ -79,6 +79,50 @@ final class AppRoomStore: RoomStore {
     func deinitialize(context: Context) {}
 }
 
+/// Notices file transfers offered to this device, and declines them. Offers are only
+/// noticed if sent here: this isn't advertised as a feature, so that senders keep
+/// choosing a client that can accept files. Only SI (XEP-0096) and Jingle (XEP-0234).
+final class FileOfferModule: XmppModuleBase, XmppModule {
+    static let ID = "roostchat.file-offers"
+
+    struct Offer {
+        let from: JID
+        let id: String?
+        let name: String?
+        let size: Int64?
+    }
+
+    let criteria = Criteria.name("iq", types: [StanzaType.set]).add(Criteria.or(
+        Criteria.name("si", xmlns: "http://jabber.org/protocol/si"),
+        Criteria.name("jingle", xmlns: "urn:xmpp:jingle:1")))
+    let features = [String]()
+    let offers = PassthroughSubject<Offer, Never>()
+
+    func process(stanza: Stanza) throws {
+        if let from = stanza.from, let offer = parse(stanza, from: from) {
+            offers.send(offer)
+        }
+        throw XMPPError.feature_not_implemented
+    }
+
+    private func parse(_ stanza: Stanza, from: JID) -> Offer? {
+        if let file = stanza.findChild(name: "si", xmlns: "http://jabber.org/protocol/si")?
+            .findChild(name: "file", xmlns: "http://jabber.org/protocol/si/profile/file-transfer") {
+            return Offer(from: from, id: stanza.id, name: file.getAttribute("name"), size: file.getAttribute("size").flatMap { Int64($0) })
+        }
+        guard let jingle = stanza.findChild(name: "jingle", xmlns: "urn:xmpp:jingle:1"),
+              jingle.getAttribute("action") == "session-initiate" else { return nil }
+        for content in jingle.getChildren(name: "content") {
+            guard let description = content.findChild(where: { $0.name == "description" && ($0.xmlns?.hasPrefix("urn:xmpp:jingle:apps:file-transfer") ?? false) }) else { continue }
+            let file = description.findChild(where: { $0.name == "file" }) ?? description.findChild(where: { $0.name == "offer" })?.findChild(where: { $0.name == "file" })
+            let name = file?.findChild(where: { $0.name == "name" })?.value
+            let size = file?.findChild(where: { $0.name == "size" })?.value.flatMap { Int64($0) }
+            return Offer(from: from, id: stanza.id, name: name, size: size)
+        }
+        return nil
+    }
+}
+
 /// Martin drops a body-less message unless a chat object already exists for that
 /// contact. The app sends through its own path, so usually none does, and typing
 /// notifications were lost. This reports them before Martin can discard them.

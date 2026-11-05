@@ -76,7 +76,7 @@ struct ChatView: View {
     }
 
     private func sameRun(_ first: StoredMessage?, _ second: StoredMessage?) -> Bool {
-        guard let first, let second else { return false }
+        guard let first, let second, !first.isNotice, !second.isNotice else { return false }
         return first.outgoing == second.outgoing && first.sender == second.sender
             && second.timestamp.timeIntervalSince(first.timestamp) < Self.groupGap
     }
@@ -185,16 +185,21 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    PresenceAvatar(key: route.peer, name: route.title, size: 30, availability: buddy?.availability)
-                    Text(verbatim: route.title).font(.caption2).lineLimit(1)
-                    if let statusLine {
-                        Text(verbatim: statusLine)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                // Side by side and at a fixed height: stacked, this was taller than
+                // the bar and spilled up under the Dynamic Island.
+                HStack(spacing: 8) {
+                    PresenceAvatar(key: route.peer, name: route.title, size: 32, availability: buddy?.availability)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(verbatim: route.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        if let statusLine {
+                            Text(verbatim: statusLine)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
+                .frame(height: 36)
             }
             if route.kind == .room {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -293,6 +298,20 @@ private struct MessageRowView: View {
         return message.body.trimmingCharacters(in: .whitespacesAndNewlines) == link
     }
 
+    private var notice: some View {
+        Label {
+            Text(verbatim: message.body)
+        } icon: {
+            Image(systemName: "paperclip")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 16)
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             if let header = row.dateHeader {
@@ -301,6 +320,16 @@ private struct MessageRowView: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             }
+            if message.isNotice {
+                notice
+            } else {
+                bubbleRow
+            }
+        }
+    }
+
+    private var bubbleRow: some View {
+        VStack(spacing: 2) {
             HStack(alignment: .bottom, spacing: 6) {
                 if message.outgoing {
                     Spacer(minLength: 56)

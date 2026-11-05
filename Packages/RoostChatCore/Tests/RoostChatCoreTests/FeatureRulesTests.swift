@@ -181,3 +181,32 @@ final class PushRelayTests: XCTestCase {
         XCTAssertEqual(PushRelay.hexToken(Data([0x00, 0x0A, 0xFF])), "000aff")
     }
 }
+
+final class FileOfferTextTests: XCTestCase {
+    func testNameAndSize() {
+        let text = FileOfferText.describe(name: "cat.png", size: 2_000_000)
+        XCTAssertTrue(text.hasPrefix("“cat.png” ("), text)
+        XCTAssertTrue(text.contains("MB"), text)
+    }
+
+    func testMissingDetails() {
+        XCTAssertEqual(FileOfferText.describe(name: nil, size: nil), "a file")
+        XCTAssertEqual(FileOfferText.describe(name: "  ", size: 0), "a file")
+    }
+
+    func testDirectionOverrideCannotDisguiseExtension() {
+        XCTAssertEqual(FileOfferText.describe(name: "photo\u{202E}gnp.exe\n", size: nil), "“photognp.exe”")
+    }
+
+    func testLongNamesAreCut() {
+        let text = FileOfferText.describe(name: String(repeating: "a", count: 300), size: nil)
+        XCTAssertLessThan(text.count, 90)
+    }
+
+    func testPreviewOnlyReplacesBareLinks() {
+        let link = "https://a.org/up/report.pdf"
+        XCTAssertEqual(FileOfferText.previewText(body: link, mediaURL: link), "Sent “report.pdf”")
+        XCTAssertEqual(FileOfferText.previewText(body: "see \(link)", mediaURL: link), "see \(link)")
+        XCTAssertEqual(FileOfferText.previewText(body: "hello", mediaURL: nil), "hello")
+    }
+}

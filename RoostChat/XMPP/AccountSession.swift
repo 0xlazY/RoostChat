@@ -184,6 +184,7 @@ final class AccountSession: ObservableObject, Identifiable {
         avatarModule = modules.register(PEPUserAvatarModule())
         vcardModule = modules.register(VCardTempModule())
         pushModule = modules.register(PushNotificationsModule())
+        let fileOffers = modules.register(FileOfferModule())
         let streamManagementModule = modules.register(StreamManagementModule())
         // Ask the server to hold the session (and our status) while the socket
         // is down. Servers cap this at their own limit.
@@ -206,6 +207,11 @@ final class AccountSession: ObservableObject, Identifiable {
         client.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.handle(state: state) }
+            .store(in: &cancellables)
+
+        fileOffers.offers
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] offer in self?.handleFileOffer(offer) }
             .store(in: &cancellables)
 
         messageModule.chatStates
@@ -519,6 +525,9 @@ final class AccountSession: ObservableObject, Identifiable {
             diagnostics.resumed = resumed
             diagnostics.tlsActive = client.connector?.activeFeatures.contains(.TLS) ?? false
             log(resumed ? "Connected, stream resumed" : "Connected as \(diagnostics.boundJID ?? jid)")
+            // A resumed session delivers no new presence, so nothing else would
+            // redraw the buddy list that the disconnect marked offline.
+            rosterRefresh.send(())
             startWatchdog()
             if !resumed {
                 avatarsRequested = []
@@ -803,13 +812,15 @@ final class AccountSession: ObservableObject, Identifiable {
         let updated = items.map { item -> Buddy in
             let bare = item.jid.bareJid
             let presence = presenceModule.store.bestPresence(for: bare, context: client)
-            let isConnected = client.state == .connected()
+            // While reconnecting, for instance on returning to the app, last-known
+            // statuses are still the best information. The session keeps them.
+            let showPresence = client.state == .connected() || userWantsConnection
             return Buddy(account: jid,
                          jid: bare.stringValue,
                          name: item.name ?? bare.stringValue,
                          groups: item.groups,
-                         availability: isConnected ? Availability(show: presence?.show) : .offline,
-                         statusText: isConnected ? presence?.status : nil,
+                         availability: showPresence ? Availability(show: presence?.show) : .offline,
+                         statusText: showPresence ? presence?.status : nil,
                          awaitingApproval: item.ask)
         }
         buddies = updated.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -941,6 +952,19 @@ final class AccountSession: ObservableObject, Identifiable {
         storeRouted(message, source: .live, timestamp: MessageRouting.effectiveTimestamp(delay: message.delay?.stamp))
     }
 
+    /// Offers are always declined. Only contacts get a notice, so that strangers
+    /// can't put text in a conversation or trigger notifications this way.
+    private func handleFileOffer(_ offer: FileOfferModule.Offer) {
+        let peer = Address.bare(offer.from.stringValue)
+        guard let contact = rosterModule.rosterManager.item(for: client, jid: JID(peer)) else { return }
+        let title = contact.name ?? peer
+        let body = "\(title) wants to send you \(FileOfferText.describe(name: offer.name, size: offer.size)). RoosterChat doesn't accept files, so ask them to send it to your other client."
+        log("Declined a file offer from \(peer)")
+        insert(peer: peer, kind: .chat, title: title, sender: title, body: body, timestamp: Date(), outgoing: false,
+               key: "offer:\(offer.id ?? UUID().uuidString)", stanzaID: nil, countsAsUnread: true,
+               mediaURL: nil, ownNickname: nil, isNotice: true)
+    }
+
     private func handleChatState(_ message: Message) {
         guard let from = message.from, let state = message.chatState else { return }
         let peer = Address.bare(from.stringValue)
@@ -1050,7 +1074,7 @@ final class AccountSession: ObservableObject, Identifiable {
     }
 
     private func insert(peer: String, kind: ConversationKind, title: String, sender: String, body: String, timestamp: Date,
-                        outgoing: Bool, key: String, stanzaID: String?, countsAsUnread: Bool, mediaURL: String?, ownNickname: String?) {
+                        outgoing: Bool, key: String, stanzaID: String?, countsAsUnread: Bool, mediaURL: String?, ownNickname: String?, isNotice: Bool = false) {
         let conversation = conversationRecord(peer: peer, kind: kind, title: title)
         let conversationID = conversation.id
         var existing = FetchDescriptor<StoredMessage>(predicate: #Predicate<StoredMessage> { $0.conversationID == conversationID && $0.dedupeKey == key })
@@ -1064,14 +1088,14 @@ final class AccountSession: ObservableObject, Identifiable {
             return
         }
         store.insert(StoredMessage(conversationID: conversationID, dedupeKey: key, stanzaID: stanzaID, sender: sender, body: body,
-                                   timestamp: timestamp, outgoing: outgoing, state: outgoing ? .sent : .received, mediaURL: mediaURL))
+                                   timestamp: timestamp, outgoing: outgoing, state: outgoing ? .sent : .received, mediaURL: mediaURL, isNotice: isNotice))
         if !outgoing && countsAsUnread && activeConversationID() != conversationID {
             conversation.unread += 1
         }
         touch(conversation, body: body, timestamp: timestamp)
         if !outgoing && countsAsUnread {
             let route = ChatRoute(account: jid, peer: peer, kind: kind, title: conversation.title)
-            onIncoming?(IncomingNotice(route: route, sender: sender, body: body, ownNickname: ownNickname))
+            onIncoming?(IncomingNotice(route: route, sender: sender, body: FileOfferText.previewText(body: body, mediaURL: mediaURL), ownNickname: ownNickname))
         }
     }
 

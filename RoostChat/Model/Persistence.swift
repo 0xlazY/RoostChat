@@ -97,8 +97,10 @@ final class StoredMessage {
     var outgoing: Bool
     var stateRaw: String
     var mediaURL: String? = nil
+    /// An app-written line, such as a file offer, rather than something the contact said.
+    var isNotice: Bool = false
 
-    init(conversationID: String, dedupeKey: String, stanzaID: String?, sender: String, body: String, timestamp: Date, outgoing: Bool, state: DeliveryState, mediaURL: String? = nil) {
+    init(conversationID: String, dedupeKey: String, stanzaID: String?, sender: String, body: String, timestamp: Date, outgoing: Bool, state: DeliveryState, mediaURL: String? = nil, isNotice: Bool = false) {
         self.conversationID = conversationID
         self.dedupeKey = dedupeKey
         self.stanzaID = stanzaID
@@ -108,6 +110,7 @@ final class StoredMessage {
         self.outgoing = outgoing
         self.stateRaw = state.rawValue
         self.mediaURL = mediaURL
+        self.isNotice = isNotice
     }
 
     var state: DeliveryState {

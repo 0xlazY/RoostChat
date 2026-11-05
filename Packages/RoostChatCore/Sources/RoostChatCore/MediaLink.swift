@@ -24,3 +24,26 @@ public enum MediaLink {
         return url
     }
 }
+
+public enum FileOfferText {
+    /// A one-line description of a file offer. The name is chosen by the sender, so
+    /// it's cut short and stripped of control and text-direction characters, which
+    /// can disguise a file's real extension.
+    public static func describe(name: String?, size: Int64?) -> String {
+        let cleaned = (name ?? "").unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0) && !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value)
+        }
+        var fileName = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: .whitespaces)
+        if fileName.count > 80 { fileName = String(fileName.prefix(80)) + "…" }
+        let label = fileName.isEmpty ? "a file" : "“\(fileName)”"
+        guard let size, size > 0 else { return label }
+        return "\(label) (\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))"
+    }
+
+    /// Notification text for a message that is only a link to a file.
+    public static func previewText(body: String, mediaURL: String?) -> String {
+        guard let mediaURL, body.trimmingCharacters(in: .whitespacesAndNewlines) == mediaURL,
+              let url = URL(string: mediaURL) else { return body }
+        return "Sent \(describe(name: url.lastPathComponent, size: nil))"
+    }
+}
