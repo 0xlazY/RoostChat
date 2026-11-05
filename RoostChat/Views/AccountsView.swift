@@ -69,6 +69,7 @@ struct SettingsView: View {
                     }
                     .disabled(!notificationsEnabled)
                 }
+                #if PUSH_NOTIFICATIONS
                 Section {
                     TextField("push.example.com", text: $relayDraft)
                         .textInputAutocapitalization(.never)
@@ -85,6 +86,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Shows \"New Message\" when the app is suspended, through a relay you host. Your XMPP server and the relay learn this device's push token. The relay sees message text only if your XMPP server includes it in push notifications. Leave blank to turn it off. Each account's diagnostics show its status.")
                 }
+                #endif
                 Section {
                     Toggle("Fetch images automatically", isOn: $autoFetchMedia)
                 } header: {

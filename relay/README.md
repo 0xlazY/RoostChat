@@ -71,7 +71,15 @@ sudo certbot reconfigure --cert-name push.example.com --deploy-hook "$PWD/copy-c
 
 ## 4. Connect the app
 
-In RoosterChat, open **Settings > Push Relay**, enter your push domain, and save. The account
+Push is off in app builds until the App ID and profile include it. After step 1, turn it on
+and upload a new build:
+
+```sh
+gh variable set ENABLE_PUSH --body true -R 0xlazY/RoostChat
+gh workflow run app-store-connect.yml -R 0xlazY/RoostChat
+```
+
+Then, in RoosterChat, open **Settings > Push Relay**, enter your push domain, and save. The account
 screen's diagnostics then show the push status.
 
 ## Checking it

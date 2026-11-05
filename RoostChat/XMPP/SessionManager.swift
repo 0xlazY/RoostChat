@@ -122,10 +122,12 @@ final class SessionManager: ObservableObject {
     }
 
     private func registerForPushIfConfigured() {
+        #if PUSH_NOTIFICATIONS
         guard pushRelay != nil, pushToken == nil else { return }
         pushProblem = nil
         notifier.requestAuthorization()
         UIApplication.shared.registerForRemoteNotifications()
+        #endif
     }
 
     private func received(pushToken token: Data) {

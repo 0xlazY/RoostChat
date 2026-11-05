@@ -26,9 +26,9 @@ buddy list, a global status, and plain timestamped conversation logs.
 - **No connection while suspended.** iOS suspends apps shortly after they leave the
   screen. The server then holds your session and status until its own time limit, after
   which contacts see you offline. Missed messages arrive when you reopen the app, and
-  notifications only fire before the suspension, unless you host the
-  [push relay](relay/README.md), which needs a paid developer account. It shows a generic
-  "New Message" alert rather than the sender and text.
+  notifications only fire before the suspension, Push through a
+  [self-hosted relay](relay/README.md) is written but off until it can be tested. It needs
+  a paid developer account, and shows a generic "New Message" alert.
 - **No sending files.** Links and images can be received, but not uploaded. No avatars or calls.
 - **Buddy list needs a connection.** The roster is held in memory, so it's empty until
   the account connects.
