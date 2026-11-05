@@ -1,6 +1,7 @@
-# Signs with the paid developer account and uploads to App Store Connect, the
-# required first step for TestFlight and for notarization (AltStore PAL).
-# Manual only. See docs/DISTRIBUTION.md for the secrets it needs.
+# Signs with a distribution certificate and provisioning profile supplied as
+# secrets, then uploads to App Store Connect for TestFlight. Needs no Admin key:
+# an upload key with the App Manager role is enough. Manual only.
+# See docs/DISTRIBUTION.md for the secrets it needs.
 name: Upload to App Store Connect
 
 on:
@@ -17,17 +18,60 @@ jobs:
       TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-      BUNDLE_ID: ${{ vars.BUNDLE_ID || 'io.github.lazy.roostchat' }}
+      BUNDLE_ID: io.github.lazy.roostchat
+      KEYCHAIN: ${{ github.workspace }}/../signing.keychain-db
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test core rules
+        run: swift test --package-path Packages/RoostChatCore
+
       - name: Install API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
           KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
           printf '%s' "$ASC_KEY_P8" > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
           echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install certificate
+        env:
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/distribution.p12"
+          printf '%s' "$DIST_CERT_P12" | base64 --decode > "$CERT_PATH"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$DIST_CERT_PASSWORD" -f pkcs12 -A -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Apple Distribution" \
+            || { echo "::error::The certificate secret isn't an Apple Distribution certificate, or its password is wrong."; exit 1; }
+
+      - name: Install provisioning profile
+        env:
+          PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
+        run: |
+          PROFILE_PATH="$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+          UUID="$(plutil -extract UUID raw "$RUNNER_TEMP/profile.plist")"
+          NAME="$(plutil -extract Name raw "$RUNNER_TEMP/profile.plist")"
+          APP_ID="$(plutil -extract Entitlements.application-identifier raw "$RUNNER_TEMP/profile.plist")"
+          if [ "$APP_ID" != "$TEAM_ID.$BUNDLE_ID" ]; then
+            echo "::error::The profile is for a different team or bundle ID than $BUNDLE_ID on the team in APPLE_TEAM_ID."
+            exit 1
+          fi
+          for DIR in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$DIR"
+            cp "$PROFILE_PATH" "$DIR/$UUID.mobileprovision"
+          done
+          echo "PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
 
       - name: Generate Xcode project
         run: |
@@ -42,27 +86,29 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/RoostChat.xcarchive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            RELEASE_PROFILE_NAME="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            > build.log 2>&1 || {
+              echo "::group::Errors"
+              grep -E "error:" build.log | sort -u | head -100
+              echo "::endgroup::"
+              tail -40 build.log
+              exit 1
+            }
 
       - name: Upload
         run: |
-          cat > build/ExportOptions.plist <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
-            <key>teamID</key><string>$TEAM_ID</string>
-            <key>signingStyle</key><string>automatic</string>
-          </dict></plist>
-          PLIST
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" \
+            -c "Add :destination string upload" \
+            -c "Add :teamID string $TEAM_ID" \
+            -c "Add :signingStyle string manual" \
+            -c "Add :signingCertificate string Apple Distribution" \
+            -c "Add :provisioningProfiles dict" \
+            -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" \
+            build/ExportOptions.plist
           xcodebuild -exportArchive \
             -archivePath build/RoostChat.xcarchive \
             -exportOptionsPlist build/ExportOptions.plist \
@@ -72,6 +118,8 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
-      - name: Remove API key
+      - name: Remove signing material
         if: always()
-        run: rm -f "$KEY_PATH"
+        run: |
+          rm -f "$KEY_PATH" "$RUNNER_TEMP/app.mobileprovision" "$RUNNER_TEMP/profile.plist" "$RUNNER_TEMP/distribution.p12"
+          security delete-keychain "$KEYCHAIN" || true

@@ -36,22 +36,30 @@ the 7 days run out. LocalDevVPN uses the iOS VPN slot, so it can conflict with a
 
 ### Upload to App Store Connect
 
-1. Register a Bundle ID in your developer account, and create the app in App Store Connect.
-2. Create an App Store Connect API key with the App Manager role.
-3. Add these GitHub repository secrets:
+This works without Admin access to the developer account. The account owner:
 
-   | Secret | Value |
-   | --- | --- |
-   | `APPLE_TEAM_ID` | Your 10-character team ID |
-   | `ASC_KEY_ID` | The API key's ID |
-   | `ASC_ISSUER_ID` | The API key's issuer ID |
-   | `ASC_KEY_P8` | The full contents of the `.p8` file |
+1. Registers the Bundle ID `io.github.lazy.roostchat` with no capabilities, and creates the
+   app in App Store Connect.
+2. Creates an **Apple Distribution** certificate, exported as a `.p12` with a password.
+3. Creates an **App Store** provisioning profile for that Bundle ID and certificate.
+4. Creates a **Team** API key with the App Manager role, for uploading.
 
-4. Add a repository variable `BUNDLE_ID` if yours differs from `io.github.lazy.roostchat`.
-5. Run the **Upload to App Store Connect** workflow from the Actions tab.
+Add these GitHub repository secrets. The values must never appear in a chat or a commit.
 
-The build is then available on TestFlight, which is the simplest way to test with a paid
-account. Run the workflow once and test there before going further.
+```sh
+R=0xlazY/RoostChat
+gh secret set APPLE_TEAM_ID -R $R
+gh secret set ASC_KEY_ID -R $R
+gh secret set ASC_ISSUER_ID -R $R
+gh secret set ASC_KEY_P8 -R $R < AuthKey_XXXXXXXXXX.p8
+base64 -w0 distribution.p12 | gh secret set DIST_CERT_P12 -R $R
+gh secret set DIST_CERT_PASSWORD -R $R
+base64 -w0 profile.mobileprovision | gh secret set PROVISIONING_PROFILE -R $R
+```
+
+Then run the **Upload to App Store Connect** workflow from the Actions tab. The build
+appears on TestFlight once Apple has processed it. Testing with your team is the simplest
+next step, before going further.
 
 ### Publish through an AltStore PAL source
 
