@@ -36,7 +36,9 @@ final class SessionManager: ObservableObject {
     var activeRoute: ChatRoute?
 
     let notifier = Notifier()
+    #if SILENT_AUDIO
     private let keeper = BackgroundKeeper()
+    #endif
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private let store: ModelContext
     private var sessionObservers = [String: AnyCancellable]()
@@ -274,9 +276,9 @@ final class SessionManager: ObservableObject {
     /// see, until its own time limit. The status itself is never changed.
     func enterBackground() {
         inForeground = false
-        DebugLog.shared.add(.app, "Entered background (silent audio \(keeper.isRunning ? "running" : "off"))")
+        DebugLog.shared.add(.app, "Entered background (silent audio \(keepAliveRunning ? "running" : "off"))")
         // With the optional silent audio running, iOS doesn't suspend the app.
-        guard !keeper.isRunning else { return }
+        guard !keepAliveRunning else { return }
         endBackgroundTask()
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep XMPP connection") { [weak self] in
             self?.finishBackgroundTime()
@@ -303,15 +305,23 @@ final class SessionManager: ObservableObject {
     /// The audio session must start while the app is in the foreground, so this
     /// runs at launch and on return rather than on backgrounding.
     func updateKeepAlive() {
+        #if SILENT_AUDIO
         let wanted = UserDefaults.standard.bool(forKey: AppSettings.keepAlive) && sessions.contains { $0.userWantsConnection }
         if wanted {
             keeper.start()
         } else {
             keeper.stop()
         }
+        #endif
     }
 
-    var keepAliveRunning: Bool { keeper.isRunning }
+    var keepAliveRunning: Bool {
+        #if SILENT_AUDIO
+        return keeper.isRunning
+        #else
+        return false
+        #endif
+    }
 
     private func networkChanged(satisfied: Bool) {
         DebugLog.shared.add(.app, "Network \(satisfied ? "available" : "unavailable")")
@@ -321,7 +331,7 @@ final class SessionManager: ObservableObject {
         }
         let returned = networkWasUnavailable
         networkWasUnavailable = false
-        guard inForeground || keeper.isRunning || backgroundTask != .invalid else { return }
+        guard inForeground || keepAliveRunning || backgroundTask != .invalid else { return }
         for session in sessions {
             if returned {
                 session.networkBecameAvailable()

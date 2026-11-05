@@ -33,6 +33,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lazy.roostchat
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Silent audio (RoostChat/Services/BackgroundKeeper.swift) is left out of
+        # releases because Apple's guideline 2.5.4 likely disallows it. To bring it
+        # back, add SILENT_AUDIO to this setting and add this under info/properties:
+        #   UIBackgroundModes:
+        #     - audio
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
     info:
       path: RoostChat/Info.plist
       properties:
@@ -40,10 +46,6 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        # Used only by the optional silent audio setting; see BackgroundKeeper.
-        # Remove before submitting for notarization: see docs/DISTRIBUTION.md.
-        UIBackgroundModes:
-          - audio
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:

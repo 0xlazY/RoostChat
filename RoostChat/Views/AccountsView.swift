@@ -4,7 +4,9 @@ import SwiftUI
 /// The Settings tab: accounts, app behaviour and debugging.
 struct SettingsView: View {
     @EnvironmentObject private var manager: SessionManager
+    #if SILENT_AUDIO
     @AppStorage(AppSettings.keepAlive) private var keepAlive = false
+    #endif
     @AppStorage(AppSettings.notificationsEnabled) private var notificationsEnabled = true
     @AppStorage(AppSettings.notificationPreview) private var notificationPreview = true
     @AppStorage(AppSettings.notificationRooms) private var notificationRooms = RoomNotificationMode.mentions.rawValue
@@ -41,6 +43,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                #if SILENT_AUDIO
                 Section {
                     Toggle("Stay connected using silent audio", isOn: $keepAlive)
                         .onChange(of: keepAlive) { _, _ in manager.updateKeepAlive() }
@@ -49,6 +52,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Warning: this plays silent audio all the time so that iOS doesn't suspend the app. It uses noticeably more battery, phone calls can interrupt it, and it stops if the app is closed. Off, iOS suspends the app shortly after you leave it: your status doesn't change, but contacts see you offline once the server's time limit ends, and notifications stop until you return.")
                 }
+                #endif
                 Section("Notifications") {
                     Toggle("Message notifications", isOn: $notificationsEnabled)
                         .onChange(of: notificationsEnabled) { _, enabled in

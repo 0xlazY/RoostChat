@@ -45,7 +45,9 @@ struct DebugView: View {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("iOS", value: UIDevice.current.systemVersion)
                     LabeledContent("Device", value: UIDevice.current.model)
+                    #if SILENT_AUDIO
                     LabeledContent("Silent audio", value: manager.keepAliveRunning ? "Running" : "Off")
+                    #endif
                     LabeledContent("Notifications", value: notificationStatus)
                     Button("Send Test Notification") { manager.notifier.postTest() }
                 }

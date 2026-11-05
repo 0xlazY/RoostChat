@@ -26,9 +26,8 @@ buddy list, a global status, and plain timestamped conversation logs.
 - **No connection while suspended.** iOS suspends apps shortly after they leave the
   screen. The server then holds your session and status until its own time limit, after
   which contacts see you offline. Missed messages arrive when you reopen the app, and
-  notifications only fire before the suspension. An optional, off-by-default setting
-  avoids this by playing silent audio, at a cost in battery. True push notifications need
-  a paid developer account and a push relay.
+  notifications only fire before the suspension. True push notifications need a paid
+  developer account and a push relay.
 - **No sending files.** Links and images can be received, but not uploaded. No avatars or calls.
 - **Buddy list needs a connection.** The roster is held in memory, so it's empty until
   the account connects.

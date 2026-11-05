@@ -1,3 +1,5 @@
+// Compiled out of releases. To bring it back, see "Silent audio" in project.yml.
+#if SILENT_AUDIO
 import AVFoundation
 import Foundation
 
@@ -93,3 +95,4 @@ final class BackgroundKeeper {
         return data
     }
 }
+#endif
