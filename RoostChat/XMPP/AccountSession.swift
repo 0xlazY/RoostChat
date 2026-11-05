@@ -5,12 +5,13 @@ import RoostChatCore
 import SwiftData
 
 enum Availability: String, CaseIterable, Identifiable {
-    case available, away, xa, dnd, offline
+    case chat, available, away, xa, dnd, offline
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .chat: return "Free for Chat"
         case .available: return "Available"
         case .away: return "Away"
         case .xa: return "Extended Away"
@@ -21,7 +22,8 @@ enum Availability: String, CaseIterable, Identifiable {
 
     fileprivate init(show: Presence.Show?) {
         switch show {
-        case .chat, .online: self = .available
+        case .chat: self = .chat
+        case .online: self = .available
         case .away: self = .away
         case .xa: self = .xa
         case .dnd: self = .dnd
@@ -31,6 +33,7 @@ enum Availability: String, CaseIterable, Identifiable {
 
     fileprivate var show: Presence.Show {
         switch self {
+        case .chat: return .chat
         case .available, .offline: return .online
         case .away: return .away
         case .xa: return .xa
@@ -81,6 +84,15 @@ struct RoomInvite: Identifiable, Equatable {
     var id: String { room }
 }
 
+/// A message worth telling the user about.
+struct IncomingNotice {
+    let route: ChatRoute
+    let sender: String
+    let body: String
+    /// The account's nickname in the room, for detecting mentions.
+    let ownNickname: String?
+}
+
 /// One XMPP account: owns its client, and turns protocol events into stored
 /// messages and published UI state. Martin delivers events on its own queues, so
 /// everything is hopped to the main actor before touching state.
@@ -96,9 +108,14 @@ final class AccountSession: ObservableObject, Identifiable {
     @Published private(set) var typingPeers: Set<String> = []
     @Published private(set) var roomStatus: [String: RoomStatus] = [:]
     @Published private(set) var occupants: [String: [String]] = [:]
+    @Published private(set) var diagnostics = ConnectionDiagnostics()
+    @Published private(set) var capabilities = ServerCapabilities()
 
     /// Whichever conversation is on screen; it doesn't accumulate unread messages.
     var activeConversationID: () -> String? = { nil }
+    var onIncoming: ((IncomingNotice) -> Void)?
+    /// Whether the user wants this account online. Survives the app being backgrounded.
+    private(set) var userWantsConnection = false
 
     private let client: XMPPClient
     private let store: ModelContext
@@ -107,6 +124,11 @@ final class AccountSession: ObservableObject, Identifiable {
     private let mucModule: MucModule
     private let mamModule: MessageArchiveManagementModule
     private let carbonsModule: MessageCarbonsModule
+    private let pingModule: PingModule
+    private let streamManagement: StreamManagementModule
+    private let streamLogger: StreamDebugLogger
+    private var watchdog: Task<Void, Never>?
+    private var pingInFlight = false
 
     private var cancellables = Set<AnyCancellable>()
     private var roomCancellables = [String: AnyCancellable]()
@@ -128,14 +150,14 @@ final class AccountSession: ObservableObject, Identifiable {
 
         // Order matters: several modules look up earlier ones when registered.
         let modules = client.modulesManager
-        modules.register(StreamFeaturesModule())
-        modules.register(AuthModule())
+        let streamFeaturesModule = modules.register(StreamFeaturesModule())
+        let authModule = modules.register(TLSRequiredAuthModule())
         modules.register(SaslModule())
         modules.register(ResourceBinderModule())
         modules.register(SessionEstablishmentModule())
-        modules.register(DiscoveryModule(identity: DiscoveryModule.Identity(category: "client", type: "phone", name: "RoostChat")))
-        modules.register(SoftwareVersionModule(version: SoftwareVersionModule.SoftwareVersion(name: "RoostChat", version: "0.1", os: nil)))
-        modules.register(PingModule())
+        let discovery = modules.register(DiscoveryModule(identity: DiscoveryModule.Identity(category: "client", type: "phone", name: "RoostChat")))
+        modules.register(SoftwareVersionModule(version: SoftwareVersionModule.SoftwareVersion(name: "RoostChat", version: "0.2", os: nil)))
+        pingModule = modules.register(PingModule())
         rosterModule = modules.register(RosterModule(rosterManager: RosterManagerBase<AppRosterStore>(store: AppRosterStore())))
         presenceModule = modules.register(PresenceModule())
         modules.register(CapabilitiesModule())
@@ -144,11 +166,19 @@ final class AccountSession: ObservableObject, Identifiable {
         carbonsModule = verifiedCarbons
         mamModule = modules.register(MessageArchiveManagementModule())
         mucModule = modules.register(MucModule(roomManager: RoomManagerBase<AppRoomStore>(store: AppRoomStore())))
-        modules.register(StreamManagementModule())
+        let streamManagementModule = modules.register(StreamManagementModule())
+        // Ask the server to hold the session (and our status) while the socket
+        // is down. Servers cap this at their own limit.
+        streamManagementModule.maxResumptionTimeout = 3600
+        streamManagement = streamManagementModule
         let receipts = modules.register(MessageDeliveryReceiptsModule())
         modules.register(ChatStateNotificationsModule())
 
         client.connectionConfiguration.userJid = BareJID(jid)
+
+        let logger = StreamDebugLogger(account: jid)
+        streamLogger = logger
+        client.streamLogger = logger
 
         knownRooms = Set(storedRooms().map(\.room))
 
@@ -205,6 +235,35 @@ final class AccountSession: ObservableObject, Identifiable {
             }
             .store(in: &cancellables)
 
+        // Martin's disconnect after a failed login may not carry the reason, so
+        // watch for it here. A retry could get the account locked.
+        authModule.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                if case .error(let error) = state { self?.authenticationFailed(error) }
+            }
+            .store(in: &cancellables)
+
+        discovery.$serverDiscoResult
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] result in
+                self?.capabilities.serverFeatures = result.features.sorted()
+                self?.capabilities.identities = result.identities.map { identity in
+                    "\(identity.category)/\(identity.type)" + (identity.name.map { " (\($0))" } ?? "")
+                }
+            }
+            .store(in: &cancellables)
+
+        discovery.$accountDiscoResult
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] result in self?.capabilities.accountFeatures = result.features.sorted() }
+            .store(in: &cancellables)
+
+        streamFeaturesModule.$streamFeatures
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] features in self?.noteStreamFeatures(features) }
+            .store(in: &cancellables)
+
         presenceModule.subscriptionPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] change in
@@ -230,18 +289,81 @@ final class AccountSession: ObservableObject, Identifiable {
     // MARK: Connection lifecycle
 
     func connect() {
+        userWantsConnection = true
         wantsConnection = true
         reconnectTask?.cancel()
         reconnectTask = nil
+        diagnostics.nextRetry = nil
         guard case .disconnected = client.state else { return }
+        guard let account = account() else { return }
         guard let password = Keychain.get(Keychain.accountKey(jid)) else {
-            status = .failed("Password missing. Edit the account to set it.")
+            fail("Password missing. Enter it in this account's settings.")
+            userWantsConnection = false
             wantsConnection = false
             return
         }
-        client.connectionConfiguration.credentials = .password(password: password, authenticationName: nil, cache: nil)
+        applySettings(account, password: password)
+        diagnostics.attempts += 1
+        diagnostics.lastAttempt = Date()
+        diagnostics.tlsSummary = nil
+        diagnostics.tlsFingerprint = nil
+        diagnostics.tlsSubject = nil
+        capabilities.saslMechanisms = []
+        capabilities.streamFeatures = []
         status = .connecting
+        log("Connecting (attempt \(diagnostics.attempts))")
         client.login()
+    }
+
+    private func applySettings(_ account: StoredAccount, password: String) {
+        let accountJID = jid
+        let domain = BareJID(jid).domain
+        client.connectionConfiguration.resource = account.resource
+        client.connectionConfiguration.credentials = .password(password: password, authenticationName: nil, cache: nil)
+
+        let validator = makeTLSValidator(domain: domain, allowUnverified: account.allowUnverifiedTLS, pinned: account.pinnedCertificate) { [weak self] observation, decision in
+            Task { @MainActor [weak self] in
+                self?.recordTLS(observation, decision: decision)
+            }
+        }
+        let resolver: DNSSrvResolver
+        if let host = account.serverHost {
+            let port = account.serverPort ?? (account.useDirectTLS ? 5223 : 5222)
+            resolver = FixedServerResolver(account: accountJID, host: host, port: port, directTLS: account.useDirectTLS)
+            diagnostics.serverRoute = "\(host):\(port) (custom, \(account.useDirectTLS ? "direct TLS" : "STARTTLS"))"
+        } else {
+            resolver = LoggingDNSResolver(account: accountJID) { [weak self] summary in
+                Task { @MainActor [weak self] in
+                    self?.diagnostics.serverRoute = summary
+                }
+            }
+            diagnostics.serverRoute = "Looking up DNS records for \(domain)"
+        }
+        client.connectionConfiguration.modifyConnectorOptions(type: SocketConnector.Options.self) { options in
+            options.sslCertificateValidation = .customValidator(validator)
+            options.conntectionTimeout = 30
+            options.dnsResolver = resolver
+        }
+    }
+
+    private func recordTLS(_ observation: TLSObservation, decision: TLSDecision) {
+        diagnostics.tlsFingerprint = observation.fingerprint
+        diagnostics.tlsSubject = observation.subject
+        switch decision {
+        case .acceptVerified:
+            diagnostics.tlsSummary = "Verified by the system"
+        case .acceptPinned:
+            diagnostics.tlsSummary = "Unverified, matches the accepted certificate"
+        case .acceptAndPin:
+            diagnostics.tlsSummary = "Unverified, accepted on first use and pinned"
+            account()?.pinnedCertificate = observation.fingerprint
+            save()
+        case .rejectUnverified:
+            diagnostics.tlsSummary = "Rejected: \(observation.systemError ?? "not trusted")"
+        case .rejectChanged(let pinned):
+            diagnostics.tlsSummary = "Rejected: certificate changed. Accepted \(pinned), server presented \(observation.fingerprint ?? "unknown")"
+        }
+        log("TLS: \(diagnostics.tlsSummary ?? "")")
     }
 
     /// Closes the socket without ending the XMPP session, so that if the server
@@ -251,13 +373,29 @@ final class AccountSession: ObservableObject, Identifiable {
     }
 
     func disconnect() {
+        userWantsConnection = false
         stop(force: false)
+    }
+
+    /// Applies changed settings by dropping the session and connecting afresh.
+    func reconnect() {
+        userWantsConnection = true
+        reconnectAttempt = 0
+        if case .disconnected = client.state {
+            connect()
+            return
+        }
+        wantsConnection = true
+        Task { [client] in
+            try? await client.disconnect(force: false)
+        }
     }
 
     private func stop(force: Bool) {
         wantsConnection = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        diagnostics.nextRetry = nil
         Task { [client] in
             try? await client.disconnect(force: force)
         }
@@ -267,16 +405,87 @@ final class AccountSession: ObservableObject, Identifiable {
     func networkBecameAvailable() {
         guard wantsConnection else { return }
         reconnectAttempt = 0
-        connect()
+        if case .disconnected = client.state {
+            connect()
+        } else {
+            checkConnection()
+        }
+    }
+
+    /// Sockets can die silently, for example when moving between networks. A ping
+    /// that times out forces a reconnect, which resumes the stream when possible.
+    func checkConnection() {
+        guard client.state == .connected(), !pingInFlight else { return }
+        pingInFlight = true
+        pingModule.ping(JID(BareJID(jid)), timeout: 20, completionHandler: { [weak self] result in
+            var timedOut = false
+            if case .failure(.remote_server_timeout) = result { timedOut = true }
+            let didTimeOut = timedOut
+            Task { @MainActor [weak self] in
+                self?.finishedWatchdogPing(timedOut: didTimeOut)
+            }
+        })
+    }
+
+    private func finishedWatchdogPing(timedOut: Bool) {
+        pingInFlight = false
+        guard timedOut, wantsConnection else { return }
+        log("Server stopped responding, reconnecting")
+        Task { [client] in
+            try? await client.disconnect(force: true)
+        }
+    }
+
+    /// Measures the round trip to the server, for the diagnostics screen.
+    func measurePing() {
+        guard client.state == .connected() else {
+            diagnostics.lastPing = "Not connected"
+            return
+        }
+        diagnostics.lastPing = "Pinging…"
+        let started = Date()
+        pingModule.ping(JID(BareJID(jid)), timeout: 20, completionHandler: { [weak self] result in
+            let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+            let text: String
+            switch result {
+            case .success: text = "\(elapsed) ms"
+            case .failure(let error): text = "Failed: \(error.rawValue)"
+            }
+            Task { @MainActor [weak self] in
+                self?.diagnostics.lastPing = text
+            }
+        })
+    }
+
+    private func startWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.checkConnection()
+            }
+        }
     }
 
     private func handle(state: XMPPClient.State) {
+        // The publisher replays the initial state before anything has happened.
+        guard diagnostics.lastAttempt != nil else { return }
+        diagnostics.lastStateChange = Date()
         switch state {
         case .connecting:
             status = .connecting
         case .connected(let resumed):
             status = .online
             reconnectAttempt = 0
+            diagnostics.connectedSince = Date()
+            diagnostics.lastError = nil
+            diagnostics.lastErrorAt = nil
+            diagnostics.boundJID = client.boundJid?.stringValue
+            diagnostics.resumed = resumed
+            diagnostics.tlsActive = client.connector?.activeFeatures.contains(.TLS) ?? false
+            log(resumed ? "Connected, stream resumed" : "Connected as \(diagnostics.boundJID ?? jid)")
+            startWatchdog()
             if !resumed {
                 carbonsModule.enable(nil)
                 rejoinRooms()
@@ -286,6 +495,10 @@ final class AccountSession: ObservableObject, Identifiable {
         case .disconnecting:
             break
         case .disconnected(let reason):
+            watchdog?.cancel()
+            watchdog = nil
+            pingInFlight = false
+            diagnostics.connectedSince = nil
             typingPeers = []
             rosterRefresh.send(())
             handleDisconnect(reason)
@@ -297,35 +510,88 @@ final class AccountSession: ObservableObject, Identifiable {
             roomStatus[room] = nil
         }
         switch reason {
-        case .authenticationFailure:
-            // Retrying a wrong password can get the account locked.
-            wantsConnection = false
-            status = .failed(reason.localizedDescription)
+        case .authenticationFailure(let error):
+            authenticationFailed(error)
         case .sslCertError:
-            // Never retried or bypassed: this may be an interception attempt.
+            // Not retried: this may be an interception attempt.
+            userWantsConnection = false
             wantsConnection = false
-            status = .failed("The server's TLS certificate could not be verified. Not connecting.")
+            fail("TLS certificate not accepted. \(diagnostics.tlsSummary ?? "")")
         case .none:
-            if wantsConnection { scheduleReconnect() } else { status = .offline }
-        default:
+            log("Disconnected")
             if wantsConnection {
-                status = .failed(reason.localizedDescription)
                 scheduleReconnect()
+            } else if case .failed = status {
+                // Keep showing why the connection ended.
             } else {
                 status = .offline
             }
+        case .timeout:
+            connectionLost("Timed out connecting to the server")
+        case .noRouteToServer:
+            connectionLost("Could not reach the server")
+        case .xmlError(let detail):
+            connectionLost("Invalid XML from the server: \(detail ?? "unknown")")
+        case .streamError(let element):
+            connectionLost("Stream error from the server: \(element.description)")
         }
+    }
+
+    private func authenticationFailed(_ error: Error) {
+        userWantsConnection = false
+        wantsConnection = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        diagnostics.nextRetry = nil
+        fail("Login failed: \(error.localizedDescription)")
+    }
+
+    private func connectionLost(_ reason: String) {
+        if wantsConnection {
+            fail(reason)
+            scheduleReconnect()
+        } else {
+            log(reason)
+            status = .offline
+        }
+    }
+
+    private func fail(_ reason: String) {
+        status = .failed(reason)
+        diagnostics.lastError = reason
+        diagnostics.lastErrorAt = Date()
+        DebugLog.shared.add(.connection, account: jid, "Error: \(reason)")
+    }
+
+    private func log(_ text: String) {
+        DebugLog.shared.add(.connection, account: jid, text)
     }
 
     private func scheduleReconnect() {
         let delay = Reconnect.delay(attempt: reconnectAttempt, jitter: Double.random(in: 0...1))
         reconnectAttempt += 1
+        diagnostics.nextRetry = Date().addingTimeInterval(delay)
+        log("Retrying in \(Int(delay)) s")
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.connect()
         }
+    }
+
+    private func noteStreamFeatures(_ features: StreamFeatures) {
+        guard let element = features.element else { return }
+        for child in element.getChildren() {
+            let label = child.xmlns.map { "\(child.name) (\($0))" } ?? child.name
+            if !capabilities.streamFeatures.contains(label) {
+                capabilities.streamFeatures.append(label)
+            }
+            if child.name == "mechanisms" {
+                capabilities.saslMechanisms = child.getChildren(name: "mechanism").compactMap(\.value)
+            }
+        }
+        diagnostics.smEnabled = streamManagement.resumptionEnabled
     }
 
     // MARK: Presence & roster
@@ -510,11 +776,13 @@ final class AccountSession: ObservableObject, Identifiable {
         case .chat(let peer, let outgoing):
             let title = rosterName(peer) ?? peer
             insert(peer: peer, kind: .chat, title: title, sender: outgoing ? "me" : title, body: body,
-                   timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread)
+                   timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread,
+                   mediaURL: MediaLink.detect(oob: message.oob, body: body), ownNickname: nil)
             if !outgoing { typingPeers.remove(peer) }
         case .roomPrivate(let peer, _, let nick, let outgoing):
             insert(peer: peer, kind: .roomPrivate, title: nick, sender: outgoing ? "me" : nick, body: body,
-                   timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread)
+                   timestamp: timestamp, outgoing: outgoing, key: key, stanzaID: message.id, countsAsUnread: countsAsUnread,
+                   mediaURL: MediaLink.detect(oob: message.oob, body: body), ownNickname: nil)
         }
     }
 
@@ -531,7 +799,8 @@ final class AccountSession: ObservableObject, Identifiable {
                                            from: message.from?.stringValue, timestamp: stamp, body: body)
         insert(peer: roomJID, kind: .room, title: room.jid.localPart ?? roomJID, sender: nick ?? roomJID, body: body,
                timestamp: MessageRouting.effectiveTimestamp(delay: stamp), outgoing: nick == room.nickname,
-               key: key, stanzaID: message.id, countsAsUnread: stamp == nil)
+               key: key, stanzaID: message.id, countsAsUnread: stamp == nil,
+               mediaURL: MediaLink.detect(oob: message.oob, body: body), ownNickname: room.nickname)
     }
 
     /// A send we made was rejected. Mark that message rather than show the echo.
@@ -567,7 +836,7 @@ final class AccountSession: ObservableObject, Identifiable {
     }
 
     private func insert(peer: String, kind: ConversationKind, title: String, sender: String, body: String, timestamp: Date,
-                        outgoing: Bool, key: String, stanzaID: String?, countsAsUnread: Bool) {
+                        outgoing: Bool, key: String, stanzaID: String?, countsAsUnread: Bool, mediaURL: String?, ownNickname: String?) {
         let conversation = conversationRecord(peer: peer, kind: kind, title: title)
         let conversationID = conversation.id
         var existing = FetchDescriptor<StoredMessage>(predicate: #Predicate<StoredMessage> { $0.conversationID == conversationID && $0.dedupeKey == key })
@@ -581,11 +850,15 @@ final class AccountSession: ObservableObject, Identifiable {
             return
         }
         store.insert(StoredMessage(conversationID: conversationID, dedupeKey: key, stanzaID: stanzaID, sender: sender, body: body,
-                                   timestamp: timestamp, outgoing: outgoing, state: outgoing ? .sent : .received))
+                                   timestamp: timestamp, outgoing: outgoing, state: outgoing ? .sent : .received, mediaURL: mediaURL))
         if !outgoing && countsAsUnread && activeConversationID() != conversationID {
             conversation.unread += 1
         }
         touch(conversation, body: body, timestamp: timestamp)
+        if !outgoing && countsAsUnread {
+            let route = ChatRoute(account: jid, peer: peer, kind: kind, title: conversation.title)
+            onIncoming?(IncomingNotice(route: route, sender: sender, body: body, ownNickname: ownNickname))
+        }
     }
 
     // MARK: Archive

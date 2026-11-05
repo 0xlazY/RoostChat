@@ -4,6 +4,23 @@ import Network
 import RoostChatCore
 import SwiftData
 
+/// Connection settings the user edits for an account.
+struct AccountConnectionSettings {
+    var host = ""
+    var port = ""
+    var directTLS = false
+    var resource = ""
+    var allowUnverifiedTLS = false
+
+    /// False when a custom host or port was typed that can't be used.
+    var isValid: Bool {
+        if host.trimmingCharacters(in: .whitespaces).isEmpty {
+            return port.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return ServerAddress.parse(host: host, port: port, directTLS: directTLS) != nil
+    }
+}
+
 /// All configured accounts, plus the app-wide state Pidgin keeps globally: one
 /// status applied to every account.
 @MainActor
@@ -11,10 +28,14 @@ final class SessionManager: ObservableObject {
     @Published private(set) var sessions: [AccountSession] = []
     @Published private(set) var availability: Availability = .available
     @Published private(set) var statusMessage: String = ""
+    /// A conversation to open, from tapping a notification.
+    @Published var pendingRoute: ChatRoute?
 
     /// The conversation on screen, which doesn't accumulate unread messages.
-    var activeConversationID: String?
+    var activeRoute: ChatRoute?
 
+    let notifier = Notifier()
+    private let keeper = BackgroundKeeper()
     private let store: ModelContext
     private var sessionObservers = [String: AnyCancellable]()
     private let pathMonitor = NWPathMonitor()
@@ -27,18 +48,28 @@ final class SessionManager: ObservableObject {
 
     init(store: ModelContext) {
         self.store = store
+        AppSettings.registerDefaults()
         let defaults = UserDefaults.standard
         availability = defaults.string(forKey: Self.availabilityKey).flatMap(Availability.init(rawValue:)) ?? .available
         statusMessage = defaults.string(forKey: Self.messageKey) ?? ""
+        notifier.onOpen = { [weak self] route in
+            Task { @MainActor [weak self] in
+                self?.pendingRoute = route
+            }
+        }
     }
 
     func start() {
         guard !started else { return }
         started = true
+        DebugLog.shared.add(.app, "App started")
         let accounts = (try? store.fetch(FetchDescriptor<StoredAccount>(sortBy: [SortDescriptor(\.createdAt)]))) ?? []
         for account in accounts {
             let session = makeSession(jid: account.jid)
             if account.enabled { session.connect() }
+        }
+        if UserDefaults.standard.bool(forKey: AppSettings.notificationsEnabled) {
+            notifier.requestAuthorization()
         }
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
@@ -47,6 +78,8 @@ final class SessionManager: ObservableObject {
             }
         }
         pathMonitor.start(queue: DispatchQueue(label: "roostchat.network"))
+        updateKeepAlive()
+        updateBadge()
     }
 
     func session(for jid: String) -> AccountSession? {
@@ -61,31 +94,78 @@ final class SessionManager: ObservableObject {
 
     // MARK: Accounts
 
-    func addAccount(jid: String, password: String) -> String? {
+    func addAccount(jid: String, password: String, settings: AccountConnectionSettings) -> String? {
         guard account(jid) == nil else { return "That account already exists." }
         guard Keychain.set(password, for: Keychain.accountKey(jid)) else {
             return "Could not save the password to the Keychain."
         }
-        store.insert(StoredAccount(jid: jid))
+        let stored = StoredAccount(jid: jid)
+        store.insert(stored)
+        apply(settings, to: stored)
         try? store.save()
         makeSession(jid: jid).connect()
+        updateKeepAlive()
         return nil
+    }
+
+    func connectionSettings(for jid: String) -> AccountConnectionSettings {
+        guard let stored = account(jid) else { return AccountConnectionSettings() }
+        return AccountConnectionSettings(host: stored.serverHost ?? "",
+                                         port: stored.serverPort.map(String.init) ?? "",
+                                         directTLS: stored.useDirectTLS,
+                                         resource: stored.resource ?? "",
+                                         allowUnverifiedTLS: stored.allowUnverifiedTLS)
+    }
+
+    func saveConnectionSettings(_ settings: AccountConnectionSettings, jid: String) {
+        guard let stored = account(jid) else { return }
+        apply(settings, to: stored)
+        try? store.save()
+        session(for: jid)?.reconnect()
+        updateKeepAlive()
+    }
+
+    private func apply(_ settings: AccountConnectionSettings, to stored: StoredAccount) {
+        if let server = ServerAddress.parse(host: settings.host, port: settings.port, directTLS: settings.directTLS) {
+            stored.serverHost = server.host
+            stored.serverPort = server.port
+            stored.useDirectTLS = settings.directTLS
+        } else {
+            stored.serverHost = nil
+            stored.serverPort = nil
+            stored.useDirectTLS = false
+        }
+        let resource = settings.resource.trimmingCharacters(in: .whitespacesAndNewlines)
+        stored.resource = resource.isEmpty ? nil : resource
+        stored.allowUnverifiedTLS = settings.allowUnverifiedTLS
+        if !settings.allowUnverifiedTLS { stored.pinnedCertificate = nil }
+    }
+
+    func forgetPinnedCertificate(jid: String) {
+        account(jid)?.pinnedCertificate = nil
+        try? store.save()
+        DebugLog.shared.add(.connection, account: jid, "Forgot the accepted certificate")
     }
 
     func updatePassword(jid: String, password: String) {
         Keychain.set(password, for: Keychain.accountKey(jid))
-        guard let session = self.session(for: jid), account(jid)?.enabled == true else { return }
-        session.connect()
+        session(for: jid)?.reconnect()
+        updateKeepAlive()
     }
 
-    func setEnabled(_ enabled: Bool, jid: String) {
-        account(jid)?.enabled = enabled
+    func setConnectOnLaunch(_ value: Bool, jid: String) {
+        account(jid)?.enabled = value
         try? store.save()
-        if enabled {
-            session(for: jid)?.connect()
-        } else {
-            session(for: jid)?.disconnect()
-        }
+    }
+
+    func connect(jid: String) {
+        session(for: jid)?.connect()
+        updateKeepAlive()
+    }
+
+    func disconnect(jid: String) {
+        session(for: jid)?.disconnect()
+        updateKeepAlive()
     }
 
     /// Removes the account and everything stored for it on this device. Nothing
@@ -108,6 +188,8 @@ final class SessionManager: ObservableObject {
         }
         if let stored = account(jid) { store.delete(stored) }
         try? store.save()
+        updateKeepAlive()
+        updateBadge()
     }
 
     func deleteConversation(_ conversation: StoredConversation) {
@@ -117,6 +199,7 @@ final class SessionManager: ObservableObject {
         deleteMessages(conversationID: conversation.id)
         store.delete(conversation)
         try? store.save()
+        updateBadge()
     }
 
     private func deleteMessages(conversationID: String) {
@@ -130,11 +213,14 @@ final class SessionManager: ObservableObject {
         if let conversation = (try? store.fetch(fetch))?.first, conversation.unread != 0 {
             conversation.unread = 0
             try? store.save()
+            updateBadge()
         }
     }
 
     // MARK: Status
 
+    /// The status only ever changes here, by the user's choice. Nothing in the app
+    /// lowers it on backgrounding or idling.
     func setStatus(_ availability: Availability, message: String) {
         self.availability = availability
         statusMessage = message
@@ -145,33 +231,80 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    // MARK: Notifications
+
+    private func handleIncoming(_ notice: IncomingNotice) {
+        updateBadge()
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: AppSettings.notificationsEnabled) else { return }
+        if inForeground && activeRoute?.id == notice.route.id { return }
+        let mode = defaults.string(forKey: AppSettings.notificationRooms).flatMap(RoomNotificationMode.init(rawValue:)) ?? .mentions
+        guard NotificationPolicy.shouldNotify(isRoom: notice.route.kind == .room, mode: mode, body: notice.body, ownNickname: notice.ownNickname) else { return }
+        notifier.post(route: notice.route, sender: notice.sender, body: notice.body,
+                      showPreview: defaults.bool(forKey: AppSettings.notificationPreview))
+    }
+
+    private func updateBadge() {
+        let conversations = (try? store.fetch(FetchDescriptor<StoredConversation>())) ?? []
+        notifier.setBadge(conversations.reduce(0) { $0 + $1.unread })
+    }
+
     // MARK: App lifecycle
 
     func enterForeground() {
         inForeground = true
         guard started else { return }
-        for session in sessions where account(session.jid)?.enabled == true {
+        DebugLog.shared.add(.app, "Entered foreground")
+        for session in sessions where session.userWantsConnection {
             session.connect()
+            session.checkConnection()
         }
+        if let route = activeRoute {
+            markRead(account: route.account, peer: route.peer)
+        }
+        updateKeepAlive()
     }
 
-    /// iOS suspends the app shortly after this, killing the socket regardless.
-    /// Closing it deliberately lets the server resume the stream on return.
+    /// With keep-alive running, nothing changes when the app leaves the screen.
+    /// Without it iOS suspends the app and kills the socket anyway; closing it
+    /// deliberately lets the server hold the session and resume it on return.
     func enterBackground() {
         inForeground = false
+        DebugLog.shared.add(.app, "Entered background (keep-alive \(keeper.isRunning ? "running" : "off"))")
+        guard !keeper.isRunning else { return }
         for session in sessions {
             session.suspend()
         }
     }
 
+    /// The audio session must start while the app is in the foreground, so this
+    /// runs at launch and on return rather than on backgrounding.
+    func updateKeepAlive() {
+        let wanted = UserDefaults.standard.bool(forKey: AppSettings.keepAlive) && sessions.contains { $0.userWantsConnection }
+        if wanted {
+            keeper.start()
+        } else {
+            keeper.stop()
+        }
+    }
+
+    var keepAliveRunning: Bool { keeper.isRunning }
+
     private func networkChanged(satisfied: Bool) {
-        if !satisfied {
+        DebugLog.shared.add(.app, "Network \(satisfied ? "available" : "unavailable")")
+        guard satisfied else {
             networkWasUnavailable = true
-        } else if networkWasUnavailable {
-            networkWasUnavailable = false
-            guard inForeground else { return }
-            for session in sessions {
+            return
+        }
+        let returned = networkWasUnavailable
+        networkWasUnavailable = false
+        guard inForeground || keeper.isRunning else { return }
+        for session in sessions {
+            if returned {
                 session.networkBecameAvailable()
+            } else {
+                // Same connectivity, possibly a new interface: is the socket alive?
+                session.checkConnection()
             }
         }
     }
@@ -179,7 +312,11 @@ final class SessionManager: ObservableObject {
     @discardableResult
     private func makeSession(jid: String) -> AccountSession {
         let session = AccountSession(jid: jid, store: store)
-        session.activeConversationID = { [weak self] in self?.activeConversationID }
+        session.activeConversationID = { [weak self] in
+            guard let self, self.inForeground else { return nil }
+            return self.activeRoute?.id
+        }
+        session.onIncoming = { [weak self] notice in self?.handleIncoming(notice) }
         session.setPresence(availability, message: statusMessage)
         // Views observe only the manager, so forward each account's changes.
         sessionObservers[jid] = session.objectWillChange.sink { [weak self] _ in

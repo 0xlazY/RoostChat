@@ -72,11 +72,11 @@ struct ChatView: View {
             OccupantsView(names: session?.occupants[route.peer] ?? [])
         }
         .onAppear {
-            manager.activeConversationID = route.id
+            manager.activeRoute = route
             manager.markRead(account: route.account, peer: route.peer)
         }
         .onDisappear {
-            if manager.activeConversationID == route.id { manager.activeConversationID = nil }
+            if manager.activeRoute == route { manager.activeRoute = nil }
             stopComposing()
         }
     }
@@ -181,12 +181,31 @@ private struct MessageLine: View {
         return time + name + body + state
     }
 
+    /// The first web link in the message, for opening from the menu.
+    private var firstLink: URL? {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let range = NSRange(message.body.startIndex..., in: message.body)
+        guard let url = detector.firstMatch(in: message.body, range: range)?.url,
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return nil }
+        return url
+    }
+
     var body: some View {
-        line
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 4) {
+            line
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            if let link = message.mediaURL {
+                MediaAttachment(link: link)
+            }
+        }
             .contextMenu {
                 Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.body }
+                if let firstLink {
+                    Link(destination: firstLink) {
+                        Label("Open Link", systemImage: "safari")
+                    }
+                }
                 if message.outgoing && message.state == .failed {
                     Button("Send Again", systemImage: "arrow.clockwise", action: resend)
                 }

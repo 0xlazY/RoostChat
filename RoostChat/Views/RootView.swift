@@ -2,19 +2,31 @@ import SwiftData
 import SwiftUI
 
 struct RootView: View {
+    @EnvironmentObject private var manager: SessionManager
     @Query private var conversations: [StoredConversation]
+    @State private var tab = Tab.buddies
+
+    private enum Tab: Hashable {
+        case buddies, chats, settings
+    }
 
     private var unread: Int { conversations.reduce(0) { $0 + $1.unread } }
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             BuddyListView()
                 .tabItem { Label("Buddies", systemImage: "person.2") }
+                .tag(Tab.buddies)
             ConversationListView()
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 .badge(unread)
-            AccountsView()
-                .tabItem { Label("Accounts", systemImage: "gearshape") }
+                .tag(Tab.chats)
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(Tab.settings)
+        }
+        .onChange(of: manager.pendingRoute) { _, route in
+            if route != nil { tab = .chats }
         }
     }
 }
@@ -22,7 +34,7 @@ struct RootView: View {
 extension Availability {
     var color: Color {
         switch self {
-        case .available: return .green
+        case .chat, .available: return .green
         case .away: return .yellow
         case .xa: return .orange
         case .dnd: return .red

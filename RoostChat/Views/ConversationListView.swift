@@ -4,9 +4,10 @@ import SwiftUI
 struct ConversationListView: View {
     @EnvironmentObject private var manager: SessionManager
     @Query(sort: \StoredConversation.lastTimestamp, order: .reverse) private var conversations: [StoredConversation]
+    @State private var path: [ChatRoute] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if conversations.isEmpty {
                     ContentUnavailableView("No conversations", systemImage: "bubble.left.and.bubble.right",
@@ -27,7 +28,18 @@ struct ConversationListView: View {
             }
             .navigationTitle("Chats")
             .navigationDestination(for: ChatRoute.self) { ChatView(route: $0) }
+            .onAppear(perform: openPending)
+            .onChange(of: manager.pendingRoute) { _, _ in openPending() }
         }
+    }
+}
+
+private extension ConversationListView {
+    /// Opens the conversation from a tapped notification.
+    func openPending() {
+        guard let route = manager.pendingRoute else { return }
+        path = [route]
+        manager.pendingRoute = nil
     }
 }
 

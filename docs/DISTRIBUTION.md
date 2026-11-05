@@ -65,6 +65,10 @@ In outline:
 4. Publish a `source.json` describing the app, then add it to PAL with
    `altstore://source?url=<your source URL>`.
 
+Before submitting, review the **Stay connected in background** feature. It plays silent
+audio through the audio background mode, which Apple's review may reject. Replacing it
+means removing `UIBackgroundModes` from `project.yml` and adding push notifications.
+
 Check before committing to this route: PAL is only available in certain regions, Apple
 may charge a commission under its alternative terms, and the source code must be public
 under the AGPL.

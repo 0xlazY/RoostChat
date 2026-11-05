@@ -4,7 +4,18 @@ import SwiftData
 @Model
 final class StoredAccount {
     @Attribute(.unique) var jid: String
+    /// Connect when the app launches. Off means connect only on request.
     var enabled: Bool
+    /// Connect here instead of using DNS records.
+    var serverHost: String? = nil
+    var serverPort: Int? = nil
+    /// TLS from the first byte (XEP-0368) instead of STARTTLS. Custom server only.
+    var useDirectTLS: Bool = false
+    /// The XMPP resource to request. Nil lets the server choose.
+    var resource: String? = nil
+    var allowUnverifiedTLS: Bool = false
+    /// SHA-256 of the unverifiable certificate the user accepted.
+    var pinnedCertificate: String? = nil
     /// Message archive position; nil until the first successful sync.
     var lastArchiveSync: Date?
     var createdAt: Date
@@ -85,8 +96,9 @@ final class StoredMessage {
     var timestamp: Date
     var outgoing: Bool
     var stateRaw: String
+    var mediaURL: String? = nil
 
-    init(conversationID: String, dedupeKey: String, stanzaID: String?, sender: String, body: String, timestamp: Date, outgoing: Bool, state: DeliveryState) {
+    init(conversationID: String, dedupeKey: String, stanzaID: String?, sender: String, body: String, timestamp: Date, outgoing: Bool, state: DeliveryState, mediaURL: String? = nil) {
         self.conversationID = conversationID
         self.dedupeKey = dedupeKey
         self.stanzaID = stanzaID
@@ -95,6 +107,7 @@ final class StoredMessage {
         self.timestamp = timestamp
         self.outgoing = outgoing
         self.stateRaw = state.rawValue
+        self.mediaURL = mediaURL
     }
 
     var state: DeliveryState {
