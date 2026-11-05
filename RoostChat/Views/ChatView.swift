@@ -25,10 +25,11 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var announcedComposing = false
     @State private var showingOccupants = false
-    @FocusState private var composerFocused: Bool
 
     private static let historyLimit = 500
     private static let bottomID = "bottom"
+    /// Clear space between the newest message and the message bar.
+    private static let bottomSpacing: CGFloat = 16
     /// A pause this long starts a new run of bubbles.
     private static let groupGap: TimeInterval = 5 * 60
     /// A pause this long gets a centered date header.
@@ -107,6 +108,9 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                // The anchor sits outside the lazy stack so that it always exists:
+                // a lazy stack may not have built its last views when scrolling.
+                VStack(spacing: 0) {
                 LazyVStack(spacing: 2) {
                     ForEach(rows) { row in
                         MessageRowView(row: row,
@@ -120,10 +124,11 @@ struct ChatView: View {
                             .padding(.leading, 36)
                             .padding(.top, 4)
                     }
-                    Color.clear.frame(height: 1).id(Self.bottomID)
                 }
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
+                Color.clear.frame(height: Self.bottomSpacing).id(Self.bottomID)
+                }
             }
             .defaultScrollAnchor(.bottom)
             // Pulling down on the conversation drags the keyboard away, as in Messages.
@@ -146,10 +151,10 @@ struct ChatView: View {
                 withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                 manager.markRead(account: route.account, peer: route.peer)
             }
-            .onChange(of: composerFocused) { _, focused in
-                if focused {
-                    withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-                }
+            // Scrolling when the bar gains focus is too early: the keyboard hasn't
+            // resized the view yet, so wait until it has appeared.
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -187,9 +192,8 @@ struct ChatView: View {
         HStack(alignment: .bottom, spacing: 6) {
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
-                .focused($composerFocused)
                 .padding(.leading, 14)
-                .padding(.vertical, 7)
+                .padding(.vertical, 9)
                 .onChange(of: draft) { _, text in updateComposing(text) }
             if canSend {
                 Button {
@@ -198,7 +202,7 @@ struct ChatView: View {
                     announcedComposing = false
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 28))
+                        .font(.system(size: 34))
                         .foregroundStyle(.white, .blue)
                 }
                 .accessibilityLabel("Send")
@@ -206,7 +210,8 @@ struct ChatView: View {
                 .padding(.bottom, 3)
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 19).stroke(Color(.systemGray3), lineWidth: 1))
+        .frame(minHeight: 40)
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color(.systemGray3), lineWidth: 1))
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(.bar)
