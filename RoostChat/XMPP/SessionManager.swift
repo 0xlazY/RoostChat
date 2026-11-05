@@ -3,6 +3,7 @@ import Foundation
 import Network
 import RoostChatCore
 import SwiftData
+import UIKit
 
 /// Connection settings the user edits for an account.
 struct AccountConnectionSettings {
@@ -36,6 +37,7 @@ final class SessionManager: ObservableObject {
 
     let notifier = Notifier()
     private let keeper = BackgroundKeeper()
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private let store: ModelContext
     private var sessionObservers = [String: AnyCancellable]()
     private let pathMonitor = NWPathMonitor()
@@ -253,6 +255,7 @@ final class SessionManager: ObservableObject {
 
     func enterForeground() {
         inForeground = true
+        endBackgroundTask()
         guard started else { return }
         DebugLog.shared.add(.app, "Entered foreground")
         for session in sessions where session.userWantsConnection {
@@ -265,16 +268,36 @@ final class SessionManager: ObservableObject {
         updateKeepAlive()
     }
 
-    /// With keep-alive running, nothing changes when the app leaves the screen.
-    /// Without it iOS suspends the app and kills the socket anyway; closing it
-    /// deliberately lets the server hold the session and resume it on return.
+    /// iOS allows a short grace period before suspending the app, during which
+    /// messages still arrive. After that the socket can't stay open, so it closes
+    /// deliberately and the server holds the session, keeping the status contacts
+    /// see, until its own time limit. The status itself is never changed.
     func enterBackground() {
         inForeground = false
-        DebugLog.shared.add(.app, "Entered background (keep-alive \(keeper.isRunning ? "running" : "off"))")
+        DebugLog.shared.add(.app, "Entered background (silent audio \(keeper.isRunning ? "running" : "off"))")
+        // With the optional silent audio running, iOS doesn't suspend the app.
         guard !keeper.isRunning else { return }
-        for session in sessions {
-            session.suspend()
+        endBackgroundTask()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep XMPP connection") { [weak self] in
+            self?.finishBackgroundTime()
         }
+        if backgroundTask == .invalid { finishBackgroundTime() }
+    }
+
+    private func finishBackgroundTime() {
+        if !inForeground {
+            DebugLog.shared.add(.app, "Background time ended, closing connections")
+            for session in sessions {
+                session.suspend()
+            }
+        }
+        endBackgroundTask()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     /// The audio session must start while the app is in the foreground, so this
@@ -298,7 +321,7 @@ final class SessionManager: ObservableObject {
         }
         let returned = networkWasUnavailable
         networkWasUnavailable = false
-        guard inForeground || keeper.isRunning else { return }
+        guard inForeground || keeper.isRunning || backgroundTask != .invalid else { return }
         for session in sessions {
             if returned {
                 session.networkBecameAvailable()

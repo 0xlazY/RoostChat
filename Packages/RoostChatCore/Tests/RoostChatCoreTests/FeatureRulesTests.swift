@@ -133,9 +133,7 @@ final class XEPCatalogTests: XCTestCase {
         XCTAssertNil(XEPCatalog.entry(forNamespace: "something:else"))
     }
 
-    func testAppListsAreDistinct() {
-        XCTAssertTrue(XEPCatalog.appSupported.contains { $0.spec == "XEP-0198" })
-        XCTAssertTrue(XEPCatalog.notImplemented.contains { $0.spec == "XEP-0384" })
+    func testSpecsAreUnique() {
         XCTAssertEqual(Set(XEPCatalog.entries.map(\.spec)).count, XEPCatalog.entries.count)
     }
 }

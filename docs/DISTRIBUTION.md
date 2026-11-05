@@ -65,9 +65,9 @@ In outline:
 4. Publish a `source.json` describing the app, then add it to PAL with
    `altstore://source?url=<your source URL>`.
 
-Before submitting, review the **Stay connected in background** feature. It plays silent
-audio through the audio background mode, which Apple's review may reject. Replacing it
-means removing `UIBackgroundModes` from `project.yml` and adding push notifications.
+Before submitting, remove the silent audio feature. It uses the audio background mode for
+something other than audio, which Apple's rules don't allow. Delete `UIBackgroundModes` from
+`project.yml`, along with the setting in `RoostChat/Views/AccountsView.swift`.
 
 Check before committing to this route: PAL is only available in certain regions, Apple
 may charge a commission under its alternative terms, and the source code must be public

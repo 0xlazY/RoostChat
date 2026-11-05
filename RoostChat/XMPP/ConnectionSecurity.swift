@@ -135,7 +135,7 @@ final class StreamDebugLogger: StreamLogger {
 
     private func record(_ direction: String, _ event: StreamEvent) {
         let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: AppSettings.logStream) else { return }
+        guard defaults.bool(forKey: AppSettings.loggingEnabled) else { return }
         let text: String
         switch event {
         case .stanza(let stanza):

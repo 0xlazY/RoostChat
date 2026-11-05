@@ -1,8 +1,22 @@
+import RoostChatCore
 import SwiftData
 import SwiftUI
 
-/// A Pidgin-style conversation log: `(12:03:14) alice: hello`, one line per
-/// message, rather than chat bubbles.
+/// One bubble and how it sits among its neighbours.
+private struct ChatRow: Identifiable {
+    let message: StoredMessage
+    let dateHeader: String?
+    /// First of a run from the same sender: shows the name in rooms.
+    let startsGroup: Bool
+    /// Last of a run: shows the avatar and the bubble's tail.
+    let endsGroup: Bool
+    let statusText: String?
+
+    var id: PersistentIdentifier { message.persistentModelID }
+}
+
+/// A conversation laid out like iMessage: blue outgoing bubbles on the right, gray
+/// incoming ones on the left with the sender's picture.
 struct ChatView: View {
     let route: ChatRoute
 
@@ -11,8 +25,14 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var announcedComposing = false
     @State private var showingOccupants = false
+    @FocusState private var composerFocused: Bool
 
     private static let historyLimit = 500
+    private static let bottomID = "bottom"
+    /// A pause this long starts a new run of bubbles.
+    private static let groupGap: TimeInterval = 5 * 60
+    /// A pause this long gets a centered date header.
+    private static let headerGap: TimeInterval = 60 * 60
 
     init(route: ChatRoute) {
         self.route = route
@@ -25,7 +45,45 @@ struct ChatView: View {
     }
 
     private var session: AccountSession? { manager.session(for: route.account) }
-    private var messages: [StoredMessage] { newestFirst.reversed() }
+
+    private var rows: [ChatRow] {
+        let messages = Array(newestFirst.reversed())
+        let lastDelivered = messages.last { $0.outgoing && $0.state == .delivered }?.persistentModelID
+        return messages.indices.map { index in
+            let message = messages[index]
+            let previous = index > 0 ? messages[index - 1] : nil
+            let next = index + 1 < messages.count ? messages[index + 1] : nil
+            let header = previous.map { message.timestamp.timeIntervalSince($0.timestamp) >= Self.headerGap } ?? true
+            let startsGroup = header || !sameRun(previous, message)
+            let nextHasHeader = next.map { $0.timestamp.timeIntervalSince(message.timestamp) >= Self.headerGap } ?? false
+            let endsGroup = nextHasHeader || !sameRun(message, next)
+            var status: String?
+            if message.outgoing {
+                switch message.state {
+                case .sending: status = "Sending…"
+                case .failed: status = "Not Delivered"
+                case .delivered: status = message.persistentModelID == lastDelivered ? "Delivered" : nil
+                case .sent, .received: status = nil
+                }
+            }
+            return ChatRow(message: message,
+                           dateHeader: header ? Self.dateLabel(message.timestamp) : nil,
+                           startsGroup: startsGroup, endsGroup: endsGroup, statusText: status)
+        }
+    }
+
+    private func sameRun(_ first: StoredMessage?, _ second: StoredMessage?) -> Bool {
+        guard let first, let second else { return false }
+        return first.outgoing == second.outgoing && first.sender == second.sender
+            && second.timestamp.timeIntervalSince(first.timestamp) < Self.groupGap
+    }
+
+    private static func dateLabel(_ date: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDateInToday(date) { return "Today \(time)" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday \(time)" }
+        return "\(date.formatted(date: .abbreviated, time: .omitted)) \(time)"
+    }
 
     private var banner: String? {
         guard let session else { return "This account was removed." }
@@ -42,34 +100,74 @@ struct ChatView: View {
         route.kind == .chat && session?.typingPeers.contains(route.peer) == true
     }
 
+    private func avatarKey(for message: StoredMessage) -> String {
+        route.kind == .room ? "\(route.peer)/\(message.sender)" : route.peer
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            if let banner {
-                Text(verbatim: banner)
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
-                    .padding(6)
-                    .background(.yellow.opacity(0.25))
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(rows) { row in
+                        MessageRowView(row: row,
+                                       showSenderName: route.kind == .room,
+                                       avatarKey: avatarKey(for: row.message),
+                                       resend: { session?.resend(row.message, route: route) })
+                    }
+                    if isTyping {
+                        TypingBubble()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 36)
+                            .padding(.top, 4)
+                    }
+                    Color.clear.frame(height: 1).id(Self.bottomID)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
             }
-            log
-            if isTyping {
-                Text(verbatim: "\(route.title) is typing…")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+            .defaultScrollAnchor(.bottom)
+            // Pulling down on the conversation drags the keyboard away, as in Messages.
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let banner {
+                    Text(verbatim: banner)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(6)
+                        .background(.yellow.opacity(0.25))
+                        .background(.bar)
+                }
             }
-            Divider()
-            composer
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                composer
+            }
+            .onChange(of: newestFirst.first?.persistentModelID) { _, _ in
+                withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                manager.markRead(account: route.account, peer: route.peer)
+            }
+            .onChange(of: composerFocused) { _, focused in
+                if focused {
+                    withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                }
+            }
         }
-        .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    AvatarView(key: route.peer, name: route.title, size: 30)
+                    Text(verbatim: route.title).font(.caption2).lineLimit(1)
+                }
+            }
             if route.kind == .room {
-                Button("Members", systemImage: "person.3") { showingOccupants = true }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Members", systemImage: "person.2") { showingOccupants = true }
+                }
             }
         }
         .sheet(isPresented: $showingOccupants) {
-            OccupantsView(names: session?.occupants[route.peer] ?? [])
+            OccupantsView(room: route.peer, names: session?.occupants[route.peer] ?? [])
         }
         .onAppear {
             manager.activeRoute = route
@@ -81,47 +179,37 @@ struct ChatView: View {
         }
     }
 
-    private var log: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(messages) { message in
-                        MessageLine(message: message) {
-                            session?.resend(message, route: route)
-                        }
-                        .id(message.persistentModelID)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-            }
-            .defaultScrollAnchor(.bottom)
-            .onChange(of: messages.last?.persistentModelID) { _, newest in
-                if let newest {
-                    withAnimation { proxy.scrollTo(newest, anchor: .bottom) }
-                }
-                manager.markRead(account: route.account, peer: route.peer)
-            }
-        }
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: 6) {
             TextField("Message", text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...6)
+                .focused($composerFocused)
+                .padding(.leading, 14)
+                .padding(.vertical, 7)
                 .onChange(of: draft) { _, text in updateComposing(text) }
-            Button {
-                session?.send(draft, route: route)
-                draft = ""
-                announcedComposing = false
-            } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
+            if canSend {
+                Button {
+                    session?.send(draft, route: route)
+                    draft = ""
+                    announcedComposing = false
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.white, .blue)
+                }
+                .accessibilityLabel("Send")
+                .padding(.trailing, 3)
+                .padding(.bottom, 3)
             }
-            .accessibilityLabel("Send")
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .padding(8)
+        .overlay(RoundedRectangle(cornerRadius: 19).stroke(Color(.systemGray3), lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.bar)
     }
 
     private func updateComposing(_ text: String) {
@@ -141,90 +229,165 @@ struct ChatView: View {
     }
 }
 
-private struct MessageLine: View {
-    let message: StoredMessage
+private struct MessageRowView: View {
+    let row: ChatRow
+    let showSenderName: Bool
+    let avatarKey: String
     let resend: () -> Void
 
-    private var stateSuffix: String {
-        guard message.outgoing else { return "" }
-        switch message.state {
-        case .sending: return " ⏳"
-        case .delivered: return " ✓"
-        case .failed: return " ⚠️"
-        case .sent, .received: return ""
-        }
-    }
+    private static let avatarSize: CGFloat = 28
 
-    private static let time: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("Hms")
-        return formatter
-    }()
+    private var message: StoredMessage { row.message }
 
-    private static let dateTime: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("yMdHms")
-        return formatter
-    }()
-
-    private var stamp: String {
-        let formatter = Calendar.current.isDateInToday(message.timestamp) ? Self.time : Self.dateTime
-        return formatter.string(from: message.timestamp)
-    }
-
-    // Bodies and names are remote input: always verbatim, never Markdown.
-    private var line: Text {
-        let time: Text = Text(verbatim: "(\(stamp)) ").foregroundColor(.secondary).font(.caption)
-        let name: Text = Text(verbatim: "\(message.sender): ").foregroundColor(message.outgoing ? .blue : .red).bold()
-        let body: Text = Text(verbatim: message.body)
-        let state: Text = Text(verbatim: stateSuffix).font(.caption)
-        return time + name + body + state
-    }
-
-    /// The first web link in the message, for opening from the menu.
-    private var firstLink: URL? {
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
-        let range = NSRange(message.body.startIndex..., in: message.body)
-        guard let url = detector.firstMatch(in: message.body, range: range)?.url,
-              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return nil }
-        return url
+    /// A message that is only a link to an image shows just the image.
+    private var isOnlyMedia: Bool {
+        guard let link = message.mediaURL, MediaLink.isImage(link) else { return false }
+        return message.body.trimmingCharacters(in: .whitespacesAndNewlines) == link
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            line
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-            if let link = message.mediaURL {
-                MediaAttachment(link: link)
+        VStack(spacing: 2) {
+            if let header = row.dateHeader {
+                Text(verbatim: header)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
             }
-        }
-            .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.body }
-                if let firstLink {
-                    Link(destination: firstLink) {
-                        Label("Open Link", systemImage: "safari")
+            HStack(alignment: .bottom, spacing: 6) {
+                if message.outgoing {
+                    Spacer(minLength: 56)
+                } else {
+                    avatar
+                }
+                VStack(alignment: message.outgoing ? .trailing : .leading, spacing: 2) {
+                    if !message.outgoing && showSenderName && row.startsGroup {
+                        Text(verbatim: message.sender)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 12)
+                    }
+                    if !isOnlyMedia {
+                        bubble
+                    }
+                    if let link = message.mediaURL {
+                        MediaAttachment(link: link)
                     }
                 }
+                if !message.outgoing {
+                    Spacer(minLength: 40)
+                }
+            }
+            .padding(.top, row.startsGroup ? 6 : 0)
+            if let status = row.statusText {
+                statusLine(status)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var avatar: some View {
+        if row.endsGroup {
+            AvatarView(key: avatarKey, name: message.sender, size: Self.avatarSize)
+        } else {
+            Color.clear.frame(width: Self.avatarSize, height: 1)
+        }
+    }
+
+    private var bubble: some View {
+        Text(linkified)
+            .foregroundStyle(message.outgoing ? Color.white : Color.primary)
+            .tint(message.outgoing ? Color.white : Color.blue)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(message.outgoing ? Color.blue : Color(.systemGray5), in: bubbleShape)
+            .contentShape(.contextMenuPreview, bubbleShape)
+            .contextMenu {
+                Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.body }
                 if message.outgoing && message.state == .failed {
                     Button("Send Again", systemImage: "arrow.clockwise", action: resend)
                 }
             }
     }
+
+    /// The corner toward the sender stays tight on the last bubble of a run.
+    private var bubbleShape: UnevenRoundedRectangle {
+        let tail: CGFloat = row.endsGroup ? 5 : 18
+        return UnevenRoundedRectangle(topLeadingRadius: 18,
+                                      bottomLeadingRadius: message.outgoing ? 18 : tail,
+                                      bottomTrailingRadius: message.outgoing ? tail : 18,
+                                      topTrailingRadius: 18,
+                                      style: .continuous)
+    }
+
+    /// The body as plain text with only web links made tappable. Remote input is
+    /// never parsed as Markdown.
+    private var linkified: AttributedString {
+        var text = AttributedString(message.body)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return text }
+        let body = message.body
+        for match in detector.matches(in: body, range: NSRange(body.startIndex..., in: body)) {
+            guard let url = match.url, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+                  let stringRange = Range(match.range, in: body),
+                  let range = Range(stringRange, in: text) else { continue }
+            text[range].link = url
+            text[range].underlineStyle = .single
+        }
+        return text
+    }
+
+    @ViewBuilder
+    private func statusLine(_ status: String) -> some View {
+        HStack(spacing: 4) {
+            Spacer()
+            if message.state == .failed {
+                Button(action: resend) {
+                    Label(status, systemImage: "exclamationmark.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            } else {
+                Text(verbatim: status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.trailing, 4)
+    }
+}
+
+private struct TypingBubble: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { _ in
+                Circle().fill(Color(.systemGray)).frame(width: 7, height: 7)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(Color(.systemGray5), in: Capsule())
+        .accessibilityLabel("Typing")
+    }
 }
 
 private struct OccupantsView: View {
+    let room: String
     let names: [String]
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List(names, id: \.self) { Text(verbatim: $0) }
-                .navigationTitle("Members (\(names.count))")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            List(names, id: \.self) { name in
+                HStack(spacing: 12) {
+                    AvatarView(key: "\(room)/\(name)", name: name, size: 36)
+                    Text(verbatim: name)
                 }
+            }
+            .listStyle(.plain)
+            .navigationTitle("Members (\(names.count))")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
     }
 }

@@ -1,10 +1,19 @@
 import SwiftData
 import SwiftUI
 
+/// The conversation list, laid out like Messages.
 struct ConversationListView: View {
     @EnvironmentObject private var manager: SessionManager
     @Query(sort: \StoredConversation.lastTimestamp, order: .reverse) private var conversations: [StoredConversation]
     @State private var path: [ChatRoute] = []
+    @State private var search = ""
+
+    private var filtered: [StoredConversation] {
+        guard !search.isEmpty else { return conversations }
+        return conversations.filter {
+            $0.title.localizedCaseInsensitiveContains(search) || $0.lastBody.localizedCaseInsensitiveContains(search)
+        }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -13,7 +22,7 @@ struct ConversationListView: View {
                     ContentUnavailableView("No conversations", systemImage: "bubble.left.and.bubble.right",
                                            description: Text("Tap a buddy to start chatting."))
                 } else {
-                    List(conversations) { conversation in
+                    List(filtered) { conversation in
                         NavigationLink(value: ChatRoute(account: conversation.account, peer: conversation.peer,
                                                         kind: conversation.kind, title: conversation.title)) {
                             ConversationRow(conversation: conversation)
@@ -24,6 +33,8 @@ struct ConversationListView: View {
                             }
                         }
                     }
+                    .listStyle(.plain)
+                    .searchable(text: $search)
                 }
             }
             .navigationTitle("Chats")
@@ -32,11 +43,9 @@ struct ConversationListView: View {
             .onChange(of: manager.pendingRoute) { _, _ in openPending() }
         }
     }
-}
 
-private extension ConversationListView {
     /// Opens the conversation from a tapped notification.
-    func openPending() {
+    private func openPending() {
         guard let route = manager.pendingRoute else { return }
         path = [route]
         manager.pendingRoute = nil
@@ -46,39 +55,34 @@ private extension ConversationListView {
 private struct ConversationRow: View {
     let conversation: StoredConversation
 
-    private var icon: String {
-        switch conversation.kind {
-        case .chat: return "person"
-        case .room: return "number"
-        case .roomPrivate: return "lock"
-        }
+    private var timeLabel: String {
+        let date = conversation.lastTimestamp
+        if Calendar.current.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(date: .numeric, time: .omitted)
     }
 
     var body: some View {
-        HStack {
-            Image(systemName: icon).foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Circle()
+                .fill(conversation.unread > 0 ? Color.blue : Color.clear)
+                .frame(width: 9, height: 9)
+                .accessibilityLabel(conversation.unread > 0 ? "\(conversation.unread) unread" : "")
+            AvatarView(key: conversation.peer, name: conversation.title, size: 48)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(verbatim: conversation.title)
-                        .fontWeight(conversation.unread > 0 ? .bold : .regular)
+                        .fontWeight(.semibold)
                         .lineLimit(1)
                     Spacer()
                     if conversation.lastTimestamp > .distantPast {
-                        Text(conversation.lastTimestamp, style: .time).font(.caption).foregroundStyle(.secondary)
+                        Text(verbatim: timeLabel).font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
-                HStack {
-                    Text(verbatim: conversation.lastBody)
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                    if conversation.unread > 0 {
-                        Text("\(conversation.unread)")
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.accentColor, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                }
+                Text(verbatim: conversation.lastBody)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
     }

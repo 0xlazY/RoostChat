@@ -1,8 +1,9 @@
 import AVFoundation
 import Foundation
 
-/// Keeps the app running in the background so the connection, and therefore the
-/// chosen status and notifications, survive leaving the screen.
+/// Optional and off by default. Keeps the app running in the background so the
+/// connection, and therefore the chosen status and notifications, survive leaving
+/// the screen.
 ///
 /// iOS suspends ordinary apps within seconds, and a chat app has no sanctioned way
 /// to stay connected without push. This plays silence through the audio background

@@ -110,6 +110,8 @@ final class AccountSession: ObservableObject, Identifiable {
     @Published private(set) var occupants: [String: [String]] = [:]
     @Published private(set) var diagnostics = ConnectionDiagnostics()
     @Published private(set) var capabilities = ServerCapabilities()
+    /// The resource the server bound this connection to.
+    @Published private(set) var assignedResource: String?
 
     /// Whichever conversation is on screen; it doesn't accumulate unread messages.
     var activeConversationID: () -> String? = { nil }
@@ -129,6 +131,11 @@ final class AccountSession: ObservableObject, Identifiable {
     private let streamLogger: StreamDebugLogger
     private var watchdog: Task<Void, Never>?
     private var pingInFlight = false
+    private let avatarModule: PEPUserAvatarModule
+    private let vcardModule: VCardTempModule
+    private var avatarQueue: [String] = []
+    private var avatarsRequested = Set<String>()
+    private var avatarFetchesActive = 0
 
     private var cancellables = Set<AnyCancellable>()
     private var roomCancellables = [String: AnyCancellable]()
@@ -166,6 +173,9 @@ final class AccountSession: ObservableObject, Identifiable {
         carbonsModule = verifiedCarbons
         mamModule = modules.register(MessageArchiveManagementModule())
         mucModule = modules.register(MucModule(roomManager: RoomManagerBase<AppRoomStore>(store: AppRoomStore())))
+        modules.register(PubSubModule())
+        avatarModule = modules.register(PEPUserAvatarModule())
+        vcardModule = modules.register(VCardTempModule())
         let streamManagementModule = modules.register(StreamManagementModule())
         // Ask the server to hold the session (and our status) while the socket
         // is down. Servers cap this at their own limit.
@@ -274,6 +284,16 @@ final class AccountSession: ObservableObject, Identifiable {
 
         presenceModule.presencePublisher
             .sink { _ in refresh.send(()) }
+            .store(in: &cancellables)
+
+        presenceModule.presencePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in self?.noteAvatarHash(in: change.presence, from: change.jid) }
+            .store(in: &cancellables)
+
+        avatarModule.avatarChangePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in self?.handleAvatarChange(jid: change.jid, ids: change.info.map(\.id), largest: change.info.map(\.size).max()) }
             .store(in: &cancellables)
 
         rosterModule.events
@@ -481,12 +501,16 @@ final class AccountSession: ObservableObject, Identifiable {
             diagnostics.connectedSince = Date()
             diagnostics.lastError = nil
             diagnostics.lastErrorAt = nil
-            diagnostics.boundJID = client.boundJid?.stringValue
+            diagnostics.boundJID = client.boundJid?.stringValue ?? diagnostics.boundJID
+            assignedResource = client.boundJid?.resource ?? assignedResource
             diagnostics.resumed = resumed
             diagnostics.tlsActive = client.connector?.activeFeatures.contains(.TLS) ?? false
             log(resumed ? "Connected, stream resumed" : "Connected as \(diagnostics.boundJID ?? jid)")
             startWatchdog()
             if !resumed {
+                avatarsRequested = []
+                avatarQueue = []
+                requestAvatar(jid)
                 carbonsModule.enable(nil)
                 rejoinRooms()
                 archiveSyncPending = true
@@ -499,6 +523,7 @@ final class AccountSession: ObservableObject, Identifiable {
             watchdog = nil
             pingInFlight = false
             diagnostics.connectedSince = nil
+            assignedResource = nil
             typingPeers = []
             rosterRefresh.send(())
             handleDisconnect(reason)
@@ -594,6 +619,114 @@ final class AccountSession: ObservableObject, Identifiable {
         diagnostics.smEnabled = streamManagement.resumptionEnabled
     }
 
+    // MARK: Avatars
+
+    /// Queues a fetch of `key`, a bare JID or `room/nick`, once per connection.
+    private func requestAvatar(_ key: String) {
+        guard avatarsRequested.insert(key).inserted else { return }
+        avatarQueue.append(key)
+        pumpAvatarQueue()
+    }
+
+    private func pumpAvatarQueue() {
+        while avatarFetchesActive < 3, !avatarQueue.isEmpty, client.state == .connected() {
+            let key = avatarQueue.removeFirst()
+            avatarFetchesActive += 1
+            if Address.resource(key) == nil {
+                fetchPEPAvatar(key)
+            } else {
+                fetchVCardAvatar(key)
+            }
+        }
+    }
+
+    private func finishAvatarFetch() {
+        avatarFetchesActive -= 1
+        pumpAvatarQueue()
+    }
+
+    /// XEP-0084, falling back to vCard for contacts who don't publish there.
+    private func fetchPEPAvatar(_ key: String) {
+        let bare = BareJID(key)
+        avatarModule.retrieveAvatarMetadata(from: bare, itemId: nil, fireEvents: false, completionHandler: { [weak self] result in
+            var itemID: String?
+            var size = 0
+            if case .success(let info) = result {
+                itemID = info.id
+                size = info.size
+            }
+            let foundID = itemID
+            let foundSize = size
+            Task { @MainActor [weak self] in
+                self?.finishedAvatarMetadata(key, itemID: foundID, size: foundSize)
+            }
+        })
+    }
+
+    private func finishedAvatarMetadata(_ key: String, itemID: String?, size: Int) {
+        guard let itemID else {
+            fetchVCardAvatar(key)
+            return
+        }
+        guard itemID != AvatarStore.shared.hash(for: key), size <= AvatarStore.maxBytes else {
+            finishAvatarFetch()
+            return
+        }
+        avatarModule.retrieveAvatar(from: BareJID(key), itemId: itemID, completionHandler: { [weak self] result in
+            var picture: Data?
+            if case .success(let item) = result { picture = item.1 }
+            let data = picture
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let data {
+                    AvatarStore.shared.save(data, hash: itemID, for: key)
+                    self.finishAvatarFetch()
+                } else {
+                    self.fetchVCardAvatar(key)
+                }
+            }
+        })
+    }
+
+    /// XEP-0153. Only inline pictures are used: following a link in a vCard would
+    /// reveal your IP address to whoever the contact points it at.
+    private func fetchVCardAvatar(_ key: String) {
+        vcardModule.retrieveVCard(from: JID(key), completionHandler: { [weak self] result in
+            var picture: Data?
+            if case .success(let vcard) = result, let encoded = vcard.photos.first?.binval, encoded.count <= AvatarStore.maxBytes * 2 {
+                picture = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters)
+            }
+            let data = picture
+            Task { @MainActor [weak self] in
+                if let data { AvatarStore.shared.save(data, hash: nil, for: key) }
+                self?.finishAvatarFetch()
+            }
+        })
+    }
+
+    /// Contacts and room occupants advertise a picture's hash in their presence.
+    private func noteAvatarHash(in presence: Presence, from sender: JID) {
+        guard let hash = presence.findChild(name: "x", xmlns: "vcard-temp:x:update")?.findChild(name: "photo")?.value,
+              !hash.isEmpty else { return }
+        let bare = Address.bare(sender.stringValue)
+        let isRoom = knownRooms.contains(bare)
+        guard !isRoom || sender.resource != nil else { return }
+        let key = isRoom ? "\(bare)/\(sender.resource ?? "")" : bare
+        guard hash != AvatarStore.shared.hash(for: key) else { return }
+        avatarsRequested.remove(key)
+        requestAvatar(key)
+    }
+
+    private func handleAvatarChange(jid sender: JID, ids: [String], largest: Int?) {
+        let key = Address.bare(sender.stringValue)
+        if ids.isEmpty {
+            AvatarStore.shared.remove(key)
+        } else if let first = ids.first, first != AvatarStore.shared.hash(for: key), (largest ?? 0) <= AvatarStore.maxBytes {
+            avatarsRequested.remove(key)
+            requestAvatar(key)
+        }
+    }
+
     // MARK: Presence & roster
 
     func setPresence(_ availability: Availability, message: String?) {
@@ -616,6 +749,9 @@ final class AccountSession: ObservableObject, Identifiable {
                          awaitingApproval: item.ask)
         }
         buddies = updated.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if client.state == .connected() {
+            for buddy in buddies { requestAvatar(buddy.jid) }
+        }
     }
 
     func addBuddy(_ address: String, name: String?, group: String?) {

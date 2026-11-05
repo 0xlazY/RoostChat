@@ -4,7 +4,7 @@ import SwiftUI
 /// The Settings tab: accounts, app behaviour and debugging.
 struct SettingsView: View {
     @EnvironmentObject private var manager: SessionManager
-    @AppStorage(AppSettings.keepAlive) private var keepAlive = true
+    @AppStorage(AppSettings.keepAlive) private var keepAlive = false
     @AppStorage(AppSettings.notificationsEnabled) private var notificationsEnabled = true
     @AppStorage(AppSettings.notificationPreview) private var notificationPreview = true
     @AppStorage(AppSettings.notificationRooms) private var notificationRooms = RoomNotificationMode.mentions.rawValue
@@ -22,23 +22,32 @@ struct SettingsView: View {
                         NavigationLink {
                             AccountDetailView(session: session)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(verbatim: session.jid)
-                                Text(verbatim: session.status.label)
-                                    .font(.caption)
-                                    .foregroundStyle(statusColor(session.status))
-                                    .lineLimit(2)
+                            HStack(spacing: 12) {
+                                AvatarView(key: session.jid, name: session.jid, size: 44)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: session.jid)
+                                    Text(verbatim: session.status.label)
+                                        .font(.caption)
+                                        .foregroundStyle(statusColor(session.status))
+                                        .lineLimit(2)
+                                    if let resource = session.assignedResource {
+                                        Text(verbatim: "Resource: \(resource)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 Section {
-                    Toggle("Stay connected in background", isOn: $keepAlive)
+                    Toggle("Stay connected using silent audio", isOn: $keepAlive)
                         .onChange(of: keepAlive) { _, _ in manager.updateKeepAlive() }
                 } header: {
-                    Text("Status")
+                    Text("Background")
                 } footer: {
-                    Text("Keeps your chosen status and notifications working when you leave the app, by playing silent audio. Uses more battery. Your status never changes by itself, but with this off, contacts see you go offline once the server gives up on the connection.")
+                    Text("Warning: this plays silent audio all the time so that iOS doesn't suspend the app. It uses noticeably more battery, phone calls can interrupt it, and it stops if the app is closed. Off, iOS suspends the app shortly after you leave it: your status doesn't change, but contacts see you offline once the server's time limit ends, and notifications stop until you return.")
                 }
                 Section("Notifications") {
                     Toggle("Message notifications", isOn: $notificationsEnabled)
@@ -62,7 +71,6 @@ struct SettingsView: View {
                     Text("When on, images load as soon as they appear, which reveals your IP address to the server hosting them. When off, tap an image to load it.")
                 }
                 Section("About") {
-                    NavigationLink("XMPP Features") { CapabilitiesView(session: nil) }
                     NavigationLink("Debug") { DebugView() }
                     LabeledContent("Encryption", value: "TLS to server only")
                     LabeledContent("Licence", value: "AGPL-3.0")
@@ -189,8 +197,17 @@ struct AccountDetailView: View {
 
     var body: some View {
         Form {
+            Section {
+                HStack(spacing: 14) {
+                    AvatarView(key: session.jid, name: session.jid, size: 64)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: session.jid).font(.headline)
+                        Text(verbatim: session.status.label).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            }
             Section("Connection") {
-                Text(verbatim: session.status.label)
+                LabeledContent("Assigned resource", value: session.assignedResource ?? "Not connected")
                 if isOnline {
                     Button("Disconnect") { manager.disconnect(jid: session.jid) }
                 } else {

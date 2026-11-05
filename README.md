@@ -11,22 +11,24 @@ buddy list, a global status, and plain timestamped conversation logs.
 - Group chat (XEP-0045): rooms, passwords, invitations, members, private messages
 - Catches up after being suspended: stream resumption (XEP-0198), message archive (XEP-0313), carbons (XEP-0280)
 - History stored on the device
-- Notifications while the app is running, and an option to keep it running in the background
+- iMessage-style conversations with profile pictures (XEP-0084 and XEP-0153)
+- Notifications while the app is running
 - Status that never changes by itself, with a choice of available, away, do not disturb and more
 - Custom server host and port, direct TLS, custom resource, and connect-on-launch per account
 - Self-signed certificates, trusted on first use and pinned
 - Image attachments, loaded on tap or automatically
-- Connection diagnostics, a server capabilities pane and a redacted debug log
+- Connection diagnostics, a server capabilities pane and an optional, redacted debug log
 
 ## Limitations
 
 - **No end-to-end encryption.** Messages are protected by TLS to the server, and the
   server can read them. OMEMO is possible later through MartinOMEMO.
-- **Staying connected uses a workaround.** iOS suspends apps that leave the screen. The
-  "Stay connected in background" setting avoids this by playing silent audio, which uses
-  more battery, can be interrupted by calls, and ends if iOS or you close the app. App
-  Review may reject it, so it needs replacing before a notarized release. True push
-  notifications need a paid developer account and a push relay.
+- **No connection while suspended.** iOS suspends apps shortly after they leave the
+  screen. The server then holds your session and status until its own time limit, after
+  which contacts see you offline. Missed messages arrive when you reopen the app, and
+  notifications only fire before the suspension. An optional, off-by-default setting
+  avoids this by playing silent audio, at a cost in battery. True push notifications need
+  a paid developer account and a push relay.
 - **No sending files.** Links and images can be received, but not uploaded. No avatars or calls.
 - **Buddy list needs a connection.** The roster is held in memory, so it's empty until
   the account connects.

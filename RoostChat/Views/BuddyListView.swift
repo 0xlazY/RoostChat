@@ -8,6 +8,7 @@ struct BuddyListView: View {
     @State private var showingAddBuddy = false
     @State private var showingJoinRoom = false
     @State private var showingStatus = false
+    @State private var buddyToRemove: Buddy?
 
     private var allBuddies: [Buddy] {
         manager.sessions.flatMap(\.buddies)
@@ -85,13 +86,24 @@ struct BuddyListView: View {
                             BuddyRow(buddy: buddy, showAccount: manager.sessions.count > 1)
                         }
                         .swipeActions {
-                            Button("Remove", role: .destructive) {
-                                manager.session(for: buddy.account)?.removeBuddy(buddy.jid)
-                            }
+                            // Not role: .destructive, which animates the row away
+                            // before the user has confirmed.
+                            Button("Remove") { buddyToRemove = buddy }
+                                .tint(.red)
                         }
                     }
                 }
             }
+        }
+        .confirmationDialog("Remove \(buddyToRemove?.name ?? "buddy")?",
+                            isPresented: Binding(get: { buddyToRemove != nil }, set: { if !$0 { buddyToRemove = nil } }),
+                            titleVisibility: .visible,
+                            presenting: buddyToRemove) { buddy in
+            Button("Remove Buddy", role: .destructive) {
+                manager.session(for: buddy.account)?.removeBuddy(buddy.jid)
+            }
+        } message: { buddy in
+            Text(verbatim: "\(buddy.jid) will be removed from your contact list on the server, on all your devices. Your conversation history stays.")
         }
     }
 
@@ -147,8 +159,13 @@ private struct BuddyRow: View {
     let showAccount: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            AvailabilityDot(availability: buddy.availability)
+        HStack(spacing: 12) {
+            AvatarView(key: buddy.jid, name: buddy.name, size: 44)
+                .overlay(alignment: .bottomTrailing) {
+                    AvailabilityDot(availability: buddy.availability)
+                        .padding(2)
+                        .background(Color(.systemBackground), in: Circle())
+                }
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: buddy.name)
                     .foregroundStyle(buddy.availability == .offline ? .secondary : .primary)

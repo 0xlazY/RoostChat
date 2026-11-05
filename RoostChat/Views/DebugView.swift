@@ -8,7 +8,7 @@ struct DebugView: View {
 
     @EnvironmentObject private var manager: SessionManager
     @ObservedObject private var log = DebugLog.shared
-    @AppStorage(AppSettings.logStream) private var logStream = true
+    @AppStorage(AppSettings.loggingEnabled) private var loggingEnabled = false
     @AppStorage(AppSettings.logBodies) private var logBodies = false
     @State private var category: LogCategory?
     @State private var search = ""
@@ -45,7 +45,7 @@ struct DebugView: View {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("iOS", value: UIDevice.current.systemVersion)
                     LabeledContent("Device", value: UIDevice.current.model)
-                    LabeledContent("Keep-alive", value: manager.keepAliveRunning ? "Running" : "Off")
+                    LabeledContent("Silent audio", value: manager.keepAliveRunning ? "Running" : "Off")
                     LabeledContent("Notifications", value: notificationStatus)
                     Button("Send Test Notification") { manager.notifier.postTest() }
                 }
@@ -56,13 +56,13 @@ struct DebugView: View {
                 }
             }
             Section {
-                Toggle("Log XML stream", isOn: $logStream)
+                Toggle("Enable logging", isOn: $loggingEnabled)
                 Toggle("Include message text", isOn: $logBodies)
-                    .disabled(!logStream)
+                    .disabled(!loggingEnabled)
             } header: {
                 Text("Logging")
             } footer: {
-                Text("Logs stay in memory until the app closes. Passwords and login exchanges are always removed. Logs still show contacts and addresses, so check them before sharing.")
+                Text("Off by default, and nothing is recorded while off. When on, connection events and XML traffic stay in memory until the app closes. Passwords and login exchanges are always removed. Logs still show contacts and addresses, so check them before sharing.")
             }
             Section {
                 Picker("Show", selection: $category) {

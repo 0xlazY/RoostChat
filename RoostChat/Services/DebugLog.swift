@@ -1,22 +1,22 @@
 import Foundation
 
 enum AppSettings {
-    static let keepAlive = "background.keepAlive"
+    static let keepAlive = "background.silentAudio"
     static let notificationsEnabled = "notifications.enabled"
     static let notificationPreview = "notifications.preview"
     static let notificationRooms = "notifications.rooms"
     static let autoFetchMedia = "media.autoFetch"
-    static let logStream = "debug.logStream"
+    static let loggingEnabled = "debug.loggingEnabled"
     static let logBodies = "debug.logBodies"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            keepAlive: true,
+            keepAlive: false,
             notificationsEnabled: true,
             notificationPreview: true,
             notificationRooms: "mentions",
             autoFetchMedia: false,
-            logStream: true,
+            loggingEnabled: false,
             logBodies: false,
         ])
     }
@@ -43,7 +43,8 @@ struct LogEntry: Identifiable {
     }
 }
 
-/// An in-memory ring of recent events. Never written to disk, gone on relaunch.
+/// An in-memory ring of recent events. Records nothing unless the user turned
+/// logging on. Never written to disk, gone on relaunch.
 /// Safe to call from any thread; Martin logs from its own queues.
 final class DebugLog: ObservableObject {
     static let shared = DebugLog()
@@ -53,6 +54,7 @@ final class DebugLog: ObservableObject {
     @Published private(set) var entries: [LogEntry] = []
 
     func add(_ category: LogCategory, account: String? = nil, _ text: String) {
+        guard UserDefaults.standard.bool(forKey: AppSettings.loggingEnabled) else { return }
         let entry = LogEntry(date: Date(), category: category, account: account, text: text)
         DispatchQueue.main.async {
             self.entries.append(entry)
