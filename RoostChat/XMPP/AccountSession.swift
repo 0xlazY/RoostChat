@@ -952,14 +952,14 @@ final class AccountSession: ObservableObject, Identifiable {
         storeRouted(message, source: .live, timestamp: MessageRouting.effectiveTimestamp(delay: message.delay?.stamp))
     }
 
-    /// Offers are always declined. Only contacts get a notice, so that strangers
+    /// The app can't receive files, see FileOfferModule. Only contacts get a notice, so that strangers
     /// can't put text in a conversation or trigger notifications this way.
     private func handleFileOffer(_ offer: FileOfferModule.Offer) {
         let peer = Address.bare(offer.from.stringValue)
         guard let contact = rosterModule.rosterManager.item(for: client, jid: JID(peer)) else { return }
         let title = contact.name ?? peer
-        let body = "\(title) wants to send you \(FileOfferText.describe(name: offer.name, size: offer.size)). RoosterChat doesn't accept files, so ask them to send it to your other client."
-        log("Declined a file offer from \(peer)")
+        let body = "\(title) wants to send you \(FileOfferText.describe(name: offer.name, size: offer.size)). RoosterChat can't receive files, so they'll need to send it to your other client."
+        log("Noticed a file offer from \(peer)")
         insert(peer: peer, kind: .chat, title: title, sender: title, body: body, timestamp: Date(), outgoing: false,
                key: "offer:\(offer.id ?? UUID().uuidString)", stanzaID: nil, countsAsUnread: true,
                mediaURL: nil, ownNickname: nil, isNotice: true)

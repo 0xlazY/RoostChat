@@ -79,9 +79,10 @@ final class AppRoomStore: RoomStore {
     func deinitialize(context: Context) {}
 }
 
-/// Notices file transfers offered to this device, and declines them. Offers are only
-/// noticed if sent here: this isn't advertised as a feature, so that senders keep
-/// choosing a client that can accept files. Only SI (XEP-0096) and Jingle (XEP-0234).
+/// Notices file transfers offered to this device. The app doesn't implement file
+/// transfer or advertise it, so senders should choose a client that does. An offer
+/// that arrives anyway gets the same feature-not-implemented reply as any unsupported
+/// request, which XMPP requires. Only SI (XEP-0096) and Jingle (XEP-0234).
 final class FileOfferModule: XmppModuleBase, XmppModule {
     static let ID = "roostchat.file-offers"
 
