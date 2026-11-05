@@ -137,3 +137,31 @@ final class XEPCatalogTests: XCTestCase {
         XCTAssertEqual(Set(XEPCatalog.entries.map(\.spec)).count, XEPCatalog.entries.count)
     }
 }
+
+final class ChatTimelineTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+
+    private func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 1, day: day, hour: hour, minute: minute))!
+    }
+
+    func testFirstMessageHasHeader() {
+        XCTAssertTrue(ChatTimeline.needsHeader(previous: nil, current: date(1, 12, 0), calendar: calendar))
+    }
+
+    func testCloseMessagesShareHeader() {
+        XCTAssertFalse(ChatTimeline.needsHeader(previous: date(1, 12, 0), current: date(1, 12, 14), calendar: calendar))
+    }
+
+    func testLongPauseGetsHeader() {
+        XCTAssertTrue(ChatTimeline.needsHeader(previous: date(1, 12, 0), current: date(1, 12, 15), calendar: calendar))
+    }
+
+    func testNewDayGetsHeaderEvenAfterShortPause() {
+        XCTAssertTrue(ChatTimeline.needsHeader(previous: date(1, 23, 59), current: date(2, 0, 1), calendar: calendar))
+    }
+}

@@ -11,6 +11,8 @@ private struct ChatRow: Identifiable {
     /// Last of a run: shows the avatar and the bubble's tail.
     let endsGroup: Bool
     let statusText: String?
+    /// The time under a run of bubbles. Omitted when a header just above says it.
+    let timeText: String?
 
     var id: PersistentIdentifier { message.persistentModelID }
 }
@@ -32,8 +34,6 @@ struct ChatView: View {
     private static let bottomSpacing: CGFloat = 16
     /// A pause this long starts a new run of bubbles.
     private static let groupGap: TimeInterval = 5 * 60
-    /// A pause this long gets a centered date header.
-    private static let headerGap: TimeInterval = 60 * 60
 
     init(route: ChatRoute) {
         self.route = route
@@ -54,9 +54,9 @@ struct ChatView: View {
             let message = messages[index]
             let previous = index > 0 ? messages[index - 1] : nil
             let next = index + 1 < messages.count ? messages[index + 1] : nil
-            let header = previous.map { message.timestamp.timeIntervalSince($0.timestamp) >= Self.headerGap } ?? true
+            let header = ChatTimeline.needsHeader(previous: previous?.timestamp, current: message.timestamp)
             let startsGroup = header || !sameRun(previous, message)
-            let nextHasHeader = next.map { $0.timestamp.timeIntervalSince(message.timestamp) >= Self.headerGap } ?? false
+            let nextHasHeader = next.map { ChatTimeline.needsHeader(previous: message.timestamp, current: $0.timestamp) } ?? false
             let endsGroup = nextHasHeader || !sameRun(message, next)
             var status: String?
             if message.outgoing {
@@ -69,7 +69,8 @@ struct ChatView: View {
             }
             return ChatRow(message: message,
                            dateHeader: header ? Self.dateLabel(message.timestamp) : nil,
-                           startsGroup: startsGroup, endsGroup: endsGroup, statusText: status)
+                           startsGroup: startsGroup, endsGroup: endsGroup, statusText: status,
+                           timeText: endsGroup && !header ? message.timestamp.formatted(date: .omitted, time: .shortened) : nil)
         }
     }
 
@@ -79,11 +80,21 @@ struct ChatView: View {
             && second.timestamp.timeIntervalSince(first.timestamp) < Self.groupGap
     }
 
+    /// As much date as the context needs: nothing extra for today, a weekday
+    /// within the past week, and the year only when it isn't this one.
     private static func dateLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
         let time = date.formatted(date: .omitted, time: .shortened)
-        if Calendar.current.isDateInToday(date) { return "Today \(time)" }
-        if Calendar.current.isDateInYesterday(date) { return "Yesterday \(time)" }
-        return "\(date.formatted(date: .abbreviated, time: .omitted)) \(time)"
+        if calendar.isDateInToday(date) { return "Today \(time)" }
+        if calendar.isDateInYesterday(date) { return "Yesterday \(time)" }
+        if let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: Date())).day,
+           (0..<7).contains(days) {
+            return "\(date.formatted(.dateTime.weekday(.wide))) \(time)"
+        }
+        if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return "\(date.formatted(.dateTime.day().month(.abbreviated))), \(time)"
+        }
+        return "\(date.formatted(.dateTime.day().month(.abbreviated).year())), \(time)"
     }
 
     private var banner: String? {
@@ -283,9 +294,7 @@ private struct MessageRowView: View {
                 }
             }
             .padding(.top, row.startsGroup ? 6 : 0)
-            if let status = row.statusText {
-                statusLine(status)
-            }
+            footer
         }
     }
 
@@ -340,23 +349,40 @@ private struct MessageRowView: View {
         return text
     }
 
+    /// Delivery status and time, under the bubble on the sender's side.
     @ViewBuilder
-    private func statusLine(_ status: String) -> some View {
-        HStack(spacing: 4) {
-            Spacer()
-            if message.state == .failed {
-                Button(action: resend) {
-                    Label(status, systemImage: "exclamationmark.circle")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
+    private var footer: some View {
+        if message.outgoing {
+            if row.statusText != nil || row.timeText != nil {
+                HStack(spacing: 4) {
+                    Spacer()
+                    if message.state == .failed, let status = row.statusText {
+                        Button(action: resend) {
+                            Label(status, systemImage: "exclamationmark.circle")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
+                    } else if let status = row.statusText {
+                        Text(verbatim: status)
+                    }
+                    if row.statusText != nil && row.timeText != nil {
+                        Text(verbatim: "·")
+                    }
+                    if let time = row.timeText {
+                        Text(verbatim: time)
+                    }
                 }
-            } else {
-                Text(verbatim: status)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.trailing, 4)
             }
+        } else if let time = row.timeText {
+            Text(verbatim: time)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, Self.avatarSize + 6 + 12)
         }
-        .padding(.trailing, 4)
     }
 }
 
