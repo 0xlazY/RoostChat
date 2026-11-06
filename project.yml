@@ -39,11 +39,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: $(RELEASE_ENTITLEMENTS)
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Silent audio (RoostChat/Services/BackgroundKeeper.swift) is left out of
-        # releases because Apple's guideline 2.5.4 likely disallows it. To bring it
-        # back, add SILENT_AUDIO to this setting and add this under info/properties:
-        #   UIBackgroundModes:
-        #     - audio
+        # The workflows add PUSH_NOTIFICATIONS and SILENT_AUDIO here, controlled by
+        # the ENABLE_PUSH and ENABLE_SILENT_AUDIO repository variables.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) $(RELEASE_CONDITIONS)
     info:
       path: RoostChat/Info.plist

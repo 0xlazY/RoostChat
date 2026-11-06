@@ -73,9 +73,14 @@ In outline:
 4. Publish a `source.json` describing the app, then add it to PAL with
    `altstore://source?url=<your source URL>`.
 
-Releases leave out the silent audio feature, because it uses the audio background mode for
-something other than audio, which Apple's guideline 2.5.4 likely disallows. If you turn it
-on for your own builds using the note in `project.yml`, don't submit those to Apple.
+The optional silent audio setting uses the audio background mode for something other than
+audio, which Apple's guideline 2.5.4 likely disallows. It's controlled by the
+`ENABLE_SILENT_AUDIO` repository variable. Internal TestFlight testing has no review, but
+turn it off before external testing or notarization:
+
+```sh
+gh variable set ENABLE_SILENT_AUDIO --body false -R 0xlazY/RoostChat
+```
 
 Check before committing to this route: PAL is only available in certain regions, Apple
 may charge a commission under its alternative terms, and the source code must be public

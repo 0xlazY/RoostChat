@@ -28,7 +28,17 @@ jobs:
           xcodegen generate
 
       - name: Build unsigned archive
+        env:
+          ENABLE_SILENT_AUDIO: ${{ vars.ENABLE_SILENT_AUDIO }}
         run: |
+          CONDITIONS=""
+          if [ "$ENABLE_SILENT_AUDIO" = "true" ]; then
+            # The audio background mode lets the optional silent audio keep the app
+            # running. Apple review may reject it: see docs/DISTRIBUTION.md.
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" -c "Add :UIBackgroundModes:0 string audio" RoostChat/Info.plist
+            CONDITIONS="$CONDITIONS SILENT_AUDIO"
+          fi
+          RELEASE_CONDITIONS="$CONDITIONS"
           xcodebuild archive \
             -project RoostChat.xcodeproj \
             -scheme RoostChat \
@@ -38,6 +48,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            RELEASE_CONDITIONS="$RELEASE_CONDITIONS" \
             > build.log 2>&1 || {
               echo "::group::Compiler errors"
               grep -E "error:" build.log | sort -u | head -100

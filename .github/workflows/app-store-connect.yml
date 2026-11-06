@@ -21,6 +21,8 @@ jobs:
       BUNDLE_ID: io.github.lazy.roostchat
       # Off until the App ID and profile include push. See relay/README.md.
       ENABLE_PUSH: ${{ vars.ENABLE_PUSH }}
+      # Optional silent audio setting. Turn off before external testing or notarization.
+      ENABLE_SILENT_AUDIO: ${{ vars.ENABLE_SILENT_AUDIO }}
       KEYCHAIN: ${{ github.workspace }}/../signing.keychain-db
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +93,12 @@ jobs:
           if [ "$ENABLE_PUSH" = "true" ]; then
             ENTITLEMENTS=RoostChat/RoostChat.entitlements
             CONDITIONS=PUSH_NOTIFICATIONS
+          fi
+          if [ "$ENABLE_SILENT_AUDIO" = "true" ]; then
+            # The audio background mode lets the optional silent audio keep the app
+            # running. Apple review may reject it: see docs/DISTRIBUTION.md.
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" -c "Add :UIBackgroundModes:0 string audio" RoostChat/Info.plist
+            CONDITIONS="$CONDITIONS SILENT_AUDIO"
           fi
           xcodebuild archive \
             -project RoostChat.xcodeproj \
